@@ -15,7 +15,7 @@ Use msync with mmap. Test with backend that compares data sent with hash that is
 
 If a duplicate backend tries to connect, just quit in BackendAccept immediately
 
-Sockets should be shared_ptr
+Sockets should be shared_ptr. The TCP sockets should have Nagle's algorithm disabled.
 
 Messages:
 	The frontend and backend sends messages to the server (and vice-versa) using their respective channels. Every message is 12 bytes, and are interpreted as 3 integers of 4 bytes each. The first number always denotes the message type, and the other two numbers are used as arguments that may optionally be used. 
@@ -53,20 +53,58 @@ Frontend:
 			
 			First, the client will be appended to the queue at unconnected_frontends[{id}]
 
-			The server then sends a CONNECT,0 message to the backend
+			The server then sends a ESTABLISH,0 message to the backend
 
 			The backend receives the message, and makes a new connection NC to S, and waits for a response. 
 
 			In NC's BackendAccept:
-				NC sends the message CONNECT,{id}
+				NC sends the message ESTABLISH,{id},0
 
-				The first client in unconnected_frontends[{id}] will be taken: conn_to_conn[{frontend}]={backend} and conn_to_conn[{backend}]={frontend}
+				The first client in unconnected_frontends[{id}] will be taken: conn_to_struct[{frontend}]={struct} and conn_to_struct[{backend}]={struct1}. {struct/struct1} is a pointer to a structure {.segment, .pipes, .to={backend/frontend}}
 
-				Then, the server sends to the backend and frontend CONNECT,1
+				Then, the server sends to the backend and frontend CONNECT,1 to signify that the connection establishment is complete. 
 
 Reading:
+	A side sends READ,{size} to the server.
+		The side may have to send multiple of these if size > segment.size --- the returned size will be smaller than size
 	
 
-
+	The server acquires a segment, and sets size=min(segment.size, size).
 	
+	Then, the server reads size from .pipes[0], and writes it to segment
+		If the read from the pipe leads to a partial read, the server should loop, appending more to the segment as needed
+
+	Then, the server should send SEGMENT,{offset},{size}
+
+	Then, the side should read the segment.
+
+	Once done, the side should send back READ_DONE.
+
+	This tells the server to release the segment
+
+Writing:
+	A side sends WRITE,{size} to the server.
+		The side may have to send multiple of these if size > segment.size --- the returned size will be smaller than size
+	
+	The server acquires a segment, sets size=min(segment.size, size) and returns SEGMENT,{offset},{size}
+
+	The side writes to the disk with offset and size (the returned size, NOT the original size)
+
+	The side sends back WRITE_DONE
+
+	The server then writes the segment to .to.pipes[1].
+		If this leads to a partial write, it will have to be done in a loop 
+
+utils:
+	class OffsetSizeTracker {
+		int offset
+		int size
+
+		std::tuple (int, int) decrement (int amount);
+
+		bool is_empty()
+
+
+
+
 
