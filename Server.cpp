@@ -1,4 +1,5 @@
 #include "util.hpp"
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <shared_mutex>
@@ -8,7 +9,6 @@
 #include <thread>
 #include <memory>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include <array>
 #include <fcntl.h>
@@ -25,17 +25,18 @@ int NUM_SEGMENTS=100;
 char* device_mmap;
 
 typedef struct {
-	int offset;
-	int size;
+	uint32_t offset;
+	uint32_t size;
 } SegmentInfo;
 std::vector<SegmentInfo> segment_to_info;
 
-std::unordered_set<int> available_segments;
+std::queue<int> available_segments;
 std::mutex as_mutex;
+std::condition_variable as_cv;
 
 std::atomic<int> thread_counter;
 
-typedef struct {
+typedef struct BackendInfo {
 	 socket_ptr conn = NULL;
 	std::mutex mu;
 } BackendInfo;
@@ -46,7 +47,7 @@ std::shared_mutex b2i_mutex;
 std::unordered_map<int, std::queue<int>> backend_to_unconnected_clients;
 std::mutex b2u_mutex;
 
-typedef struct {
+typedef struct ThreadInfo {
 	int segment = -1;
 	std::array<int, 2> pipes;
 	std::atomic<int> to = -1;
@@ -63,16 +64,38 @@ void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, 
 	auto& info=backend_to_info[key];
 	b2i_mutex.unlock_shared();
 
-	{
-		std::unique_lock<std::mutex> lk(info.mu);
+	std::unique_lock<std::mutex> lk(info.mu);
+	try{
 		writeToConn(info.conn, buf, msg_type, arg1, arg2);
+	}
+	catch (asio::system_error& e){
+		b2i_mutex.lock();
+		info.conn->close();
+		backend_to_info.erase(key);
+
 	}
 }
 
 auto& acquireSegment(int& segment){
 	std::unique_lock<std::mutex> lk(as_mutex);
+	as_cv.wait(lk, []{return !available_segments.empty();});
+	
+	segment=available_segments.front();
+	available_segments.pop();
+	return segment_to_info[segment];
 	
 }
+
+void releaseSegment(int& segment){
+	if (segment == -1){
+		return;
+	}
+	std::unique_lock<std::mutex> lk(as_mutex);
+	as_cv.notify_all();
+	available_segments.push(segment);
+	segment=-1;
+}
+
 void HandleConn(socket_ptr socket){
 	auto key=thread_counter.fetch_add(1);
 	t2i_mutex.lock_shared();
@@ -102,7 +125,8 @@ void HandleConn(socket_ptr socket){
 				case (ESTABLISH):
 					{
 						b2u_mutex.lock();
-						int to = backend_to_unconnected_clients[arg1].pop();
+						int to = backend_to_unconnected_clients[arg1].front();
+						backend_to_unconnected_clients[arg1].pop();
 						b2u_mutex.unlock();
 						
 						info.to=to;
@@ -206,7 +230,11 @@ void FrontendServer(){
 
 MessageType peekFromConn(socket_ptr socket){
 	std::array<uint8_t,4> buf;
-	asio::read(*socket, asio::buffer(buf), socket::local::message_peek);
+	int bytes_read=0;
+
+	while(bytes_read < buf.max_size()){
+		bytes_read+=socket->receive(asio::buffer(buf), socket_base::message_peek);
+	}
 
 	return static_cast<MessageType>(deserializeInt(buf.data(),0));
 }
@@ -250,9 +278,9 @@ int main(int argc, char** argv){
 	
 	segment_to_info.resize(NUM_SEGMENTS);
 	
-	int segment_size=device_size/NUM_SEGMENTS; //Later, can use "fair allocation" to use all of the space available
+	uint32_t segment_size=device_size/NUM_SEGMENTS; //Later, can use "fair allocation" to use all of the space available
 	for(int i =0; i< NUM_SEGMENTS; i++){
-		available_segments.insert(i);
+		available_segments.push(i);
 		segment_to_info[i]={.offset=i*segment_size,.size=segment_size };
 	}
 
