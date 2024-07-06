@@ -116,7 +116,7 @@ void HandleConn(socket_ptr socket){
 					backend_to_unconnected_clients[arg1].push(key);
 					b2u_mutex.unlock();
 
-					writeToBackend(arg1, message_buf, ESTABLISH, 0, 0); //Locks, then calls writeToConn
+					writeToBackend(arg1, message_buf, ESTABLISH, 0, 0); 
 
 					info.to.wait(-1);
 					writeToConn(socket, message_buf, CONNECT, 1, 0);
@@ -140,7 +140,7 @@ void HandleConn(socket_ptr socket){
 					}
 				case (READ):
 					{
-					auto& segment = acquireSegment(info.segment); //Should be a reference, and set it. Should also return a reference to the proper key.
+					auto& segment = acquireSegment(info.segment); 
 
 					ssize_t bytes_read=0;
 					ssize_t size=std::min(segment.size, arg1);
@@ -152,8 +152,7 @@ void HandleConn(socket_ptr socket){
 
 					readFromConn(socket, message_buf);
 					
-					releaseSegment(info.segment); //Should also be a reference, and should set to -1
-					break;
+					releaseSegment(info.segment); 					break;
 					}
 
 
@@ -218,11 +217,11 @@ void FrontendServer(){
 	tcp::acceptor acceptor(context, tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
        
         for (;;){
-            auto socket=std::make_shared<socket_type>(context, ip::tcp::v4);
+            auto socket=std::make_shared<socket_type>(context, ip::tcp::v4().protocol());
+	    socket->set_option(ip::tcp::no_delay( true)); //Should just be placed in a wrapper functionvfor making new tcp sockets (so I don't forget about the no_delay
             
             acceptor.accept(*socket);
 
-	    socket->set_option(ip::tcp::no_delay( true));
 
             std::thread(HandleConn, socket).detach();
         }
@@ -269,6 +268,11 @@ void BackendServer(){
 
 int main(int argc, char** argv){
 	int device_fd=open(DEVICE_PATH.c_str(), O_RDWR);
+	
+	if (device_fd == -1){
+		perror("Error opening the disk:");
+		return 2;
+	}
 
 	int device_size=lseek(device_fd, 0, SEEK_END);
 
