@@ -19,7 +19,8 @@
 std::string ADDRESS="0.0.0.0";
 int PORT=8222;
 std::string SOCKET="/tmp/shmem.sock";
-std::string DEVICE_PATH="/dev/disk4";
+//std::string DEVICE_PATH="/dev/disk4";
+std::string DEVICE_PATH="./upload_test";
 int NUM_SEGMENTS=100;
 
 char* device_mmap;
@@ -218,9 +219,10 @@ void FrontendServer(){
        
         for (;;){
             auto socket=std::make_shared<socket_type>(context, ip::tcp::v4().protocol());
-	    socket->set_option(ip::tcp::no_delay( true)); //Should just be placed in a wrapper functionvfor making new tcp sockets (so I don't forget about the no_delay
             
             acceptor.accept(*socket);
+
+	    socket->set_option(ip::tcp::no_delay( true)); //Should just be placed in a wrapper functionvfor making new tcp sockets (so I don't forget about the no_delay
 
 
             std::thread(HandleConn, socket).detach();
@@ -267,11 +269,11 @@ void BackendServer(){
 }
 
 int main(int argc, char** argv){
-	int device_fd=open(DEVICE_PATH.c_str(), O_RDWR);
+	int device_fd=open(DEVICE_PATH.c_str(), O_RDWR); //Maybe can make this open (with error checking) also its own utility function (along with the mapping)
 	
 	if (device_fd == -1){
-		perror("Error opening the disk:");
-		return 2;
+		perror("Error opening the disk");
+		exit(2);
 	}
 
 	int device_size=lseek(device_fd, 0, SEEK_END);
