@@ -5,22 +5,25 @@
 #include <shared_mutex>
 #include <queue>
 #include <string>
-#include <sys/socket.h>
 #include <thread>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 #include <array>
+#include <future>
+
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 
+std::string DEVICE=getEnv("DEVICE", SHMEM_DEFAULT_HOST_DEVICE);
+std::string ADDRESS=getEnv("ADDRESS", TCP_DEFAULT_ADDRESS);
+int PORT=getEnv("PORT", TCP_DEFAULT_PORT);
+std::string SOCKET=getEnv("SOCKET", UNIX_DEFAULT_SOCKET);
 
-std::string ADDRESS="0.0.0.0";
-int PORT=8222;
-std::string SOCKET="/tmp/shmem.sock";
-//std::string DEVICE_PATH="/dev/disk4";
-std::string DEVICE_PATH="./upload_test";
+//std::string DEVICE="./upload_test";
+
 int NUM_SEGMENTS=100;
 
 char* device_mmap;
@@ -37,7 +40,7 @@ std::condition_variable as_cv;
 
 std::atomic<int> thread_counter;
 
-typedef struct BackendInfo {
+typedef struct {
 	 socket_ptr conn = NULL;
 	std::mutex mu;
 } BackendInfo;
@@ -48,7 +51,7 @@ std::shared_mutex b2i_mutex;
 std::unordered_map<int, std::queue<int>> backend_to_unconnected_clients;
 std::mutex b2u_mutex;
 
-typedef struct ThreadInfo {
+typedef struct {
 	int segment = -1;
 	std::array<int, 2> pipes;
 	std::atomic<int> to = -1;
@@ -67,7 +70,7 @@ void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, 
 
 	std::unique_lock<std::mutex> lk(info.mu);
 	try{
-		writeToConn(info.conn, buf, msg_type, arg1, arg2);
+		writeToConn(*info.conn, buf, msg_type, arg1, arg2);
 	}
 	catch (asio::system_error& e){
 		b2i_mutex.lock();
@@ -104,12 +107,12 @@ void HandleConn(socket_ptr socket){
 	t2i_mutex.unlock_shared();
 
 	pipe(info.pipes.data());
-	info.conn=socket;
+	info.conn=std::move(socket);
 	std::array<uint8_t, 12> message_buf;
 	
 	try {
 		for (;;){
-			auto [ msg_type, arg1, arg2 ] = readFromConn(socket, message_buf);
+			auto [ msg_type, arg1, arg2 ] = readFromConn(*info.conn, message_buf);
 			switch (msg_type){
 				case (CONNECT):
 					{
@@ -120,7 +123,7 @@ void HandleConn(socket_ptr socket){
 					writeToBackend(arg1, message_buf, ESTABLISH, 0, 0); 
 
 					info.to.wait(-1);
-					writeToConn(socket, message_buf, CONNECT, 1, 0);
+					writeToConn(*info.conn, message_buf, CONNECT, 1, 0);
 					break;	
 					}
 				case (ESTABLISH):
@@ -136,7 +139,7 @@ void HandleConn(socket_ptr socket){
 						thread_to_info[to].to=key;
 						t2i_mutex.unlock();
 
-						writeToConn(socket, message_buf, CONNECT, 1, 0);
+						writeToConn(*info.conn, message_buf, CONNECT, 1, 0);
 						break;
 					}
 				case (READ):
@@ -149,9 +152,9 @@ void HandleConn(socket_ptr socket){
 						bytes_read+=read(info.pipes[0],device_mmap+segment.offset+bytes_read, size - bytes_read);
 					}
 					msync(device_mmap+segment.offset, size, MS_SYNC);
-					writeToConn(socket, message_buf, SEGMENT, segment.offset, size);
+					writeToConn(*info.conn, message_buf, SEGMENT, segment.offset, size);
 
-					readFromConn(socket, message_buf);
+					readFromConn(*info.conn, message_buf);
 					
 					releaseSegment(info.segment); 					break;
 					}
@@ -162,9 +165,9 @@ void HandleConn(socket_ptr socket){
 					auto& segment = acquireSegment(info.segment);
 					ssize_t size=std::min(segment.size, arg1);
 					
-					writeToConn(socket, message_buf, SEGMENT, segment.offset, size);
+					writeToConn(*info.conn, message_buf, SEGMENT, segment.offset, size);
 					
-					readFromConn(socket, message_buf);
+					readFromConn(*info.conn, message_buf);
 					
 					ssize_t bytes_written=0;
 
@@ -176,7 +179,7 @@ void HandleConn(socket_ptr socket){
 
 					t2i_mutex.unlock_shared();
 
-					writeToConn(socket, message_buf, WRITE, 1, 0);
+					writeToConn(*info.conn, message_buf, WRITE, 1, 0);
 					
 					releaseSegment(info.segment);
 					break;
@@ -218,41 +221,41 @@ void FrontendServer(){
 	tcp::acceptor acceptor(context, tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
        
         for (;;){
-            auto socket=std::make_shared<socket_type>(context, ip::tcp::v4().protocol());
+            auto socket=std::make_unique<socket_type>(context, TCP);
             
             acceptor.accept(*socket);
 
 	    socket->set_option(ip::tcp::no_delay( true)); //Should just be placed in a wrapper functionvfor making new tcp sockets (so I don't forget about the no_delay
 
 
-            std::thread(HandleConn, socket).detach();
+            std::thread(HandleConn, std::move(socket)).detach();
         }
 }
 
-MessageType peekFromConn(socket_ptr socket){
+MessageType peekFromConn(socket_type& socket){
 	std::array<uint8_t,4> buf;
 	int bytes_read=0;
 
 	while(bytes_read < buf.max_size()){
-		bytes_read+=socket->receive(asio::buffer(buf), socket_base::message_peek);
+		bytes_read+=socket.receive(asio::buffer(buf), socket_base::message_peek);
 	}
 
 	return static_cast<MessageType>(deserializeInt(buf.data(),0));
 }
 void HandleBackend(socket_ptr socket){
-	auto msg_type = peekFromConn(socket);
+	auto msg_type = peekFromConn(*socket);
 	if (msg_type == ESTABLISH){
-		std::thread(HandleConn, socket).detach();
+		std::thread(HandleConn, std::move(socket)).detach();
 	}else{
 		std::array<uint8_t, 12> message_buf;
-		auto [msg_type, arg1, arg2] = readFromConn(socket, message_buf);
+		auto [msg_type, arg1, arg2] = readFromConn(*socket, message_buf);
 		{
 			std::unique_lock<std::shared_mutex> lk(b2i_mutex);
 			if (backend_to_info.contains(arg1)){
 				socket->close();
 				return;
 			}
-			backend_to_info[arg1].conn=socket;
+			backend_to_info[arg1].conn=std::move(socket);
 		}
 
 	}
@@ -261,30 +264,20 @@ void BackendServer(){
 	unlink(SOCKET.c_str());
 	local::stream_protocol::acceptor acceptor(context, local::stream_protocol::endpoint(SOCKET));
 	for (;;){
-            auto socket=std::make_shared<socket_type>(context);
+            auto socket=std::make_unique<socket_type>(context, UNIX);
 	    acceptor.accept(*socket);
-	    std::thread(HandleBackend, socket).detach();
+	    std::thread(HandleBackend, std::move(socket)).detach();
 	}
 
 }
 
 int main(int argc, char** argv){
-	int device_fd=open(DEVICE_PATH.c_str(), O_RDWR); //Maybe can make this open (with error checking) also its own utility function (along with the mapping)
-	
-	if (device_fd == -1){
-		perror("Error opening the disk");
-		exit(2);
-	}
 
-	int device_size=lseek(device_fd, 0, SEEK_END);
-
-	lseek(device_size, 0, SEEK_SET);
-
-	device_mmap=(char*)mmap(NULL, device_size, PROT_WRITE| PROT_READ, MAP_SHARED, device_fd, 0);
+	auto device_size=open_disk(DEVICE, &device_mmap, NULL);
 	
 	segment_to_info.resize(NUM_SEGMENTS);
 	
-	uint32_t segment_size=device_size/NUM_SEGMENTS; //Later, can use "fair allocation" to use all of the space available
+	auto segment_size=device_size/NUM_SEGMENTS; //Later, can use "fair allocation" to use all of the space available
 	for(int i =0; i< NUM_SEGMENTS; i++){
 		available_segments.push(i);
 		segment_to_info[i]={.offset=i*segment_size,.size=segment_size };
