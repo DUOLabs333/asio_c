@@ -156,7 +156,8 @@ void HandleConn(socket_ptr socket){
 
 					readFromConn(*info.conn, message_buf);
 					
-					releaseSegment(info.segment); 					break;
+					releaseSegment(info.segment); 				
+					break;
 					}
 
 

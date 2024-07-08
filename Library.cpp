@@ -98,9 +98,58 @@ void shmem_close(ShmemConn* result){
 	if (result->conn){
 		result->conn->close();
 	}
+
+	delete result;
 }
 
+void shmem_read(ShmemConn* result, char* buf, int len, bool* err){
+	*err=0;
+	try{
+		if(NET){
+			asio::read(*result->conn, asio::buffer(buf, len));
+		}else{
+			auto offset=0;
+			while(len > 0){
+				writeToConn(*result->conn, result->msg_buf, READ, len, 0);
+				auto [ msg_type, arg1, arg2] = readFromConn( *result->conn, result->msg_buf);
+				memcpy(buf+offset, device_mmap+arg1, arg2);
+				offset+=arg2;
+				len-=arg2;
 
-shmem_read()
+				writeToConn(*result->conn, result->msg_buf, READ, 1, 0);
+			}
+			 
+		}
+	}
+	catch (asio::system_error& e){
+		*err=1;
+	}
 
-shmem_write() //Both read and write have a pointer to a bool, that tells them if there's an error
+
+}
+
+void shmem_write(ShmemConn* result, char* buf, int len, bool* err){
+	*err=0;
+	try{
+		if(NET){
+			asio::write(*result->conn, asio::buffer(buf, len));
+		}else{
+			auto offset=0;
+			while(len > 0){
+				writeToConn(*result->conn, result->msg_buf, WRITE, len, 0);
+				auto [ msg_type, arg1, arg2] = readFromConn( *result->conn, result->msg_buf);
+				memcpy(device_mmap+arg1, buf+offset, arg2);
+				offset+=arg2;
+				len-=arg2;
+
+				writeToConn(*result->conn, result->msg_buf, WRITE, 1, 0);
+			}
+			 
+		}
+	}
+	catch (asio::system_error& e){
+		*err=1;
+	}
+
+
+}
