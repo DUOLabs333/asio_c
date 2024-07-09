@@ -1,22 +1,29 @@
+COMMON_SRC_FILES=["util.cpp"]
 
 class common(BuildBase):
-    SRC_FILES=["util.cpp"]
-
     INCLUDE_PATHS=[get_dep_path("asio", "asio/include")]
 
     OUTPUT_NAME="shmem_connect"
 
-class server(BuildBase):
+class server(common):
 
     OUTPUT_TYPE=EXE 
-    
-    def __init__(self):
-        self.SRC_FILES.append("Server.cpp")
+    SRC_FILES=COMMON_SRC_FILES+["Server.cpp"]
 
-class library(BuildBase):
+class library(common):
 
      OUTPUT_TYPE=STATIC
-    
-    def __init__(self):
-        self.SRC_FILES.append("Library.cpp")
+
+     SRC_FILES=COMMON_SRC_FILES+["Library.cpp"]
         
+class test_backend(common):
+    OUTPUT_TYPE=EXE
+    SRC_FILES=["test_backend.cpp"]
+    STATIC_LIBS=["shmem_connect.a"]
+    OUTPUT_NAME="test_backend"
+
+class test_client(common):
+    OUTPUT_TYPE=EXE
+    SRC_FILES=["test_client.cpp"]
+    STATIC_LIBS=["shmem_connect.a"]
+    OUTPUT_NAME="test_client"
