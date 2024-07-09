@@ -68,6 +68,13 @@ ShmemConn* shmem_acceptor_init(int id){ //For backends
 		result->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
 	}else{
 		result->conn=std::make_unique<socket_type>(context, UNIX);
+		asio::error_code ec;
+		while(true){
+			asio::connect(*result->conn, local::stream_protocol::endpoint(SOCKET), ec);
+			if(!ec){
+				break;
+			}
+		}
 		writeToConn(*result->conn, result->msg_buf, INIT, id, 0);
 		result->id=id;
 	}
