@@ -2,6 +2,10 @@
 #include <cstdint>
 #include <format>
 
+#ifdef __APPLE__
+	#include <sys/disk.h>
+#endif
+
 uint32_t deserializeInt(uint8_t* buf, int i){ //Deserialzes from little endian in endian-agnostic way
     return buf[i+0] | (buf[i+1] << 8) | (buf[i+2] << 16) | (buf[i+3] << 24);
 }
@@ -29,8 +33,21 @@ void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType m
 
 uint32_t open_disk(int fd, char** buf){
 	auto size=lseek(fd, 0, SEEK_END);
+	#ifdef __APPLE__ //Because lseek doesn't work on block devices on MacOS
+		uint32_t bcount;
+		auto ret1=ioctl(fd, DKIOCGETBLOCKCOUNT, &bcount);
 
-	lseek(size, 0, SEEK_SET);
+		uint32_t bsize;
+		auto ret2= ioctl(fd, DKIOCGETBLOCKSIZE, &bsize);
+
+		if ((ret1 < 0) || (ret2 < 0)){
+			fprintf(stderr, "Error getting size of disk");
+			exit(2);
+		}
+
+		size=bcount*bsize;
+	#endif
+	lseek(fd, 0, SEEK_SET);
 	
 	if (buf!= NULL){
 		*buf=(char*)mmap(NULL, size, PROT_WRITE| PROT_READ, MAP_SHARED, fd, 0);
