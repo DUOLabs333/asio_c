@@ -95,7 +95,7 @@ ShmemConn* shmem_acceptor_accept(ShmemConn* acceptor){ //For backends
 		result->conn->connect(local::stream_protocol::endpoint(SOCKET));
 		writeToConn(*result->conn, result->msg_buf, ESTABLISH, acceptor->id, 0);
 
-		readFromConn(*acceptor->conn, result->msg_buf);
+		readFromConn(*result->conn, result->msg_buf);
 	}
 
 	return result;

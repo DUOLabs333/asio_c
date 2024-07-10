@@ -19,11 +19,11 @@ class library(common):
 class test_backend(common):
     OUTPUT_TYPE=EXE
     SRC_FILES=["test_backend.cpp"]
-    STATIC_LIBS=["shmem_connect.a"]
+    STATIC_LIBS=[library]
     OUTPUT_NAME="test_backend"
 
 class test_client(common):
     OUTPUT_TYPE=EXE
     SRC_FILES=["test_client.cpp"]
-    STATIC_LIBS=["shmem_connect.a"]
+    STATIC_LIBS=[library]
     OUTPUT_NAME="test_client"
