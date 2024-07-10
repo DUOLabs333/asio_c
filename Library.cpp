@@ -70,7 +70,7 @@ ShmemConn* shmem_acceptor_init(int id){ //For backends
 		result->conn=std::make_unique<socket_type>(context, UNIX);
 		asio::error_code ec;
 		while(true){
-			asio::connect(*result->conn, local::stream_protocol::endpoint(SOCKET), ec);
+			asio::connect(*result->conn, std::vector<local::stream_protocol::endpoint>({local::stream_protocol::endpoint(SOCKET)}), ec);
 			if(!ec){
 				break;
 			}

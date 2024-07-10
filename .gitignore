@@ -1,3 +1,5 @@
 shmem_connect
+test_backend
+test_client
 *.o
 *.a

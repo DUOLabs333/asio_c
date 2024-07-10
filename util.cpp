@@ -1,5 +1,6 @@
 #include "util.hpp"
 #include <cstdint>
+#include <format>
 
 uint32_t deserializeInt(uint8_t* buf, int i){ //Deserialzes from little endian in endian-agnostic way
     return buf[i+0] | (buf[i+1] << 8) | (buf[i+2] << 16) | (buf[i+3] << 24);
@@ -41,7 +42,8 @@ uint32_t open_disk(int fd, char** buf){
 uint32_t open_disk(std::string path, char** buf, int* fd){
 	int device_fd=open(path.c_str(), O_RDWR);
 	if (device_fd == -1){
-		perror("Error opening the disk");
+		auto format_string=std::format("Error opening the disk {}", path);
+		perror(format_string.c_str());
 		exit(2);
 	}
 	
