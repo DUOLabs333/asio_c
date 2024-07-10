@@ -30,38 +30,38 @@ asio::io_context context;
 
 //CLIENT : index =1. SERVER && TCP && acceptor = 0. SERVER && TCP && else = 1.
 
+#ifdef CLIENT
+	ShmemConn* shmem_connect(int id){ //For clients
+		auto result=new ShmemConn();
 
-ShmemConn* shmem_connect(int id){ //For clients
-	auto result=new ShmemConn();
+		auto resolver_results=resolver.resolve(ADDRESS, std::to_string(PORT));
 
-	auto resolver_results=resolver.resolve(ADDRESS, std::to_string(PORT));
+		std::vector<ip::tcp::resolver::endpoint_type> endpoints;
 
-	std::vector<ip::tcp::resolver::endpoint_type> endpoints;
+		for(auto& result: resolver_results){
+			endpoints.push_back(result.endpoint());
+		}
+		
+		result->conn=std::make_unique<socket_type>(context, TCP);
+		
+		asio::error_code ec;
+		while (true){
+			asio::connect(*result->conn, endpoints, ec);
+			if (!ec){
+			    break;
+			}
+		}
+		result->conn->set_option( asio::ip::tcp::no_delay( true) );
+		
+		if(!NET){
+			writeToConn(*result->conn, result->msg_buf, CONNECT, id, 0);
+			readFromConn(*result->conn, result->msg_buf);
+		}
 
-	for(auto& result: resolver_results){
-		endpoints.push_back(result.endpoint());
+		return result;
+
 	}
-	
-	result->conn=std::make_unique<socket_type>(context, TCP);
-	
-	asio::error_code ec;
-        while (true){
-        	asio::connect(*result->conn, endpoints, ec);
-        	if (!ec){
-                    break;
-                }
-        }
-	result->conn->set_option( asio::ip::tcp::no_delay( true) );
-	
-	if(!NET){
-		writeToConn(*result->conn, result->msg_buf, CONNECT, id, 0);
-		readFromConn(*result->conn, result->msg_buf);
-	}
-
-	return result;
-
-}
-
+#endif
 ShmemConn* shmem_acceptor_init(int id){ //For backends
 	auto result=new ShmemConn();
 	if(NET){
