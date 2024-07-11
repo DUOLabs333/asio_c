@@ -7,7 +7,7 @@ auto test_buf=new uint8_t[1024];
 auto actual_buf=new uint8_t[1024];
 bool err;
 int main(int argc, char** argv){
-	auto acceptor=asio_acceptor_init(1);
+	auto acceptor=asio_acceptor_init(0);
 
 	auto client=asio_acceptor_accept(acceptor);
 

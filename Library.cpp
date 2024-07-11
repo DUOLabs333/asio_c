@@ -24,7 +24,7 @@ tcp::resolver resolver(context);
 
 
 std::tuple<std::string, int> get_backend(int id){
-	auto& backend=backends[id];
+	auto& backend=backends.at(id);
 
 	auto address_key=std::format("{}_ADDRESS", backend.prefix);
 	auto port_key=std::format("{}_PORT", backend.prefix);
