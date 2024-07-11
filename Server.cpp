@@ -38,7 +38,7 @@ std::queue<int> available_segments;
 std::mutex as_mutex;
 std::condition_variable as_cv;
 
-std::atomic<int> thread_counter;
+std::atomic<int> thread_counter = 0;
 
 typedef struct {
 	 socket_ptr conn = NULL;
@@ -137,6 +137,7 @@ void HandleConn(socket_ptr socket){
 
 						t2i_mutex.lock();
 						thread_to_info[to].to=key;
+						thread_to_info[to].to.notify_one();
 						t2i_mutex.unlock();
 
 						writeToConn(*info.conn, message_buf, CONNECT, 1, 0);
@@ -175,7 +176,7 @@ void HandleConn(socket_ptr socket){
 					t2i_mutex.lock_shared();
 
 					while(bytes_written < size){
-						write(thread_to_info[info.to].pipes[1], device_mmap+segment.offset+bytes_written, size - bytes_written);
+						bytes_written+=write(thread_to_info[info.to].pipes[1], device_mmap+segment.offset+bytes_written, size - bytes_written);
 					}
 
 					t2i_mutex.unlock_shared();

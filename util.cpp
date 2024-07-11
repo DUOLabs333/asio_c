@@ -23,8 +23,8 @@ std::tuple <MessageType, uint32_t, uint32_t> readFromConn(socket_type& socket, s
 	return {static_cast<MessageType>(deserializeInt(buf.data(), 0)), deserializeInt(buf.data(), 4), deserializeInt(buf.data(), 8)};
 }
 
-void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType msg_type, uint8_t arg1, uint8_t arg2){
-	serializeInt(buf.data(), 0, static_cast<uint8_t>(msg_type));
+void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType msg_type, uint32_t arg1, uint32_t arg2){
+	serializeInt(buf.data(), 0, static_cast<uint32_t>(msg_type));
 	serializeInt(buf.data(), 4, arg1);
 	serializeInt(buf.data(), 8, arg2);
 

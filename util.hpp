@@ -33,7 +33,7 @@ uint32_t deserializeInt(uint8_t* buf, int i);
 void serializeInt(uint8_t* buf, int i, uint32_t val);
 
 std::tuple <MessageType, uint32_t, uint32_t> readFromConn(socket_type& socket, std::array<uint8_t, 12> buf);
-void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType msg_type, uint8_t arg1, uint8_t arg2);
+void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType msg_type, uint32_t arg1, uint32_t arg2);
 
 uint32_t open_disk(int fd, char** buf);
 uint32_t open_disk(std::string path, char** buf, int* fd);
