@@ -1,108 +1,87 @@
 #include "util.hpp"
+#include <asio/error_code.hpp>
 #include <optional>
 #include "Library.h"
 
-struct ShmemConn{
+struct AsioConn {
 	std::optional<tcp::acceptor> acceptor;
 	socket_ptr conn;
-	std::array<uint8_t, 12> msg_buf;
-	int id;
 };
 
-bool NET=getEnv("NET", false);
 
-std::string ADDRESS=getEnv("ADDRESS", TCP_DEFAULT_ADDRESS);
-int PORT=getEnv("PORT", TCP_DEFAULT_PORT);
-std::string SOCKET=getEnv("SOCKET", UNIX_DEFAULT_SOCKET);
+typedef struct {
+	std::string prefix;
+	std::string address = "192.168.64.1";
+	int port;
+} BackendInfo;
+
+std::vector<BackendInfo> backends = { {.prefix="STREAM", .port = 9000} };
+
 
 char* device_mmap;
 asio::io_context context;
+tcp::resolver resolver(context);
 
-#ifdef CLIENT
-	std::string DEVICE=getEnv("DEVICE", SHMEM_DEFAULT_GUEST_DEVICE);
-	auto dummy=open_disk(DEVICE, &device_mmap, NULL);
 
-	tcp::resolver resolver(context);
-#else
-	std::string DEVICE=getEnv("DEVICE", SHMEM_DEFAULT_HOST_DEVICE);
-	auto dummy=open_disk(DEVICE, &device_mmap, NULL); //Temporary --- once I get fd passing working, this line will no longer be needed
-#endif
+std::tuple<std::string, int> get_backend(int id){
+	auto& backend=backends[id];
 
-//CLIENT : index =1. SERVER && TCP && acceptor = 0. SERVER && TCP && else = 1.
+	auto address_key=std::format("{}_ADDRESS", backend.prefix);
+	auto port_key=std::format("{}_PORT", backend.prefix);
 
-#ifdef CLIENT
-	ShmemConn* shmem_connect(int id){ //For clients
-		auto result=new ShmemConn();
-
-		auto resolver_results=resolver.resolve(ADDRESS, std::to_string(PORT));
-
-		std::vector<ip::tcp::resolver::endpoint_type> endpoints;
-
-		for(auto& result: resolver_results){
-			endpoints.push_back(result.endpoint());
-		}
-		
-		result->conn=std::make_unique<socket_type>(context, TCP);
-		
-		asio::error_code ec;
-		while (true){
-			asio::connect(*result->conn, endpoints, ec);
-			if (!ec){
-			    break;
-			}
-		}
-		result->conn->set_option( asio::ip::tcp::no_delay( true) );
-		
-		if(!NET){
-			writeToConn(*result->conn, result->msg_buf, CONNECT, id, 0);
-			readFromConn(*result->conn, result->msg_buf);
-		}
-
-		return result;
-
-	}
-#endif
-ShmemConn* shmem_acceptor_init(int id){ //For backends
-	auto result=new ShmemConn();
-	if(NET){
-		result->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
-	}else{
-		result->conn=std::make_unique<socket_type>(context, UNIX);
-		asio::error_code ec;
-		while(true){
-			asio::connect(*result->conn, std::vector<local::stream_protocol::endpoint>({local::stream_protocol::endpoint(SOCKET)}), ec);
-			if(!ec){
-				break;
-			}
-		}
-		writeToConn(*result->conn, result->msg_buf, INIT, id, 0);
-		result->id=id;
-	}
-
-	return result;
+	return {getEnv(address_key, backend.address), getEnv(port_key, backend.port)};
 }
 
-ShmemConn* shmem_acceptor_accept(ShmemConn* acceptor){ //For backends
-	auto result=new ShmemConn();
-	if(NET){
-		result->conn=std::make_unique<socket_type>(context, TCP);
-		acceptor->acceptor->accept(*result->conn);
-		result->conn->set_option( asio::ip::tcp::no_delay( true) );
-	}else{
-		readFromConn(*acceptor->conn, result->msg_buf);
+AsioConn* asio_connect(int id){ //For clients
+	auto result=new AsioConn();
+	
+	auto [address, port] = get_backend(id);
 
-		result->conn=std::make_unique<socket_type>(context, UNIX);
-		result->conn->connect(local::stream_protocol::endpoint(SOCKET));
-		writeToConn(*result->conn, result->msg_buf, ESTABLISH, acceptor->id, 0);
+	auto resolver_results=resolver.resolve(address, std::to_string(port));
 
-		readFromConn(*result->conn, result->msg_buf);
+	std::vector<ip::tcp::resolver::endpoint_type> endpoints;
+
+	for(auto& result: resolver_results){
+		endpoints.push_back(result.endpoint());
 	}
+	
+	result->conn=std::make_unique<socket_type>(context, TCP);
+	
+	asio::error_code ec;
+	while (true){
+		asio::connect(*result->conn, endpoints, ec);
+		if (!ec){
+		    break;
+		}
+	}
+	result->conn->set_option( asio::ip::tcp::no_delay( true) );
 
 	return result;
 
 }
 
-void shmem_close(ShmemConn* result){
+AsioConn* asio_acceptor_init(int id){ //For backends
+	auto result=new AsioConn();
+
+	auto [address, port] = get_backend(id);
+	
+	result->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(address), port));
+
+	return result;
+}
+
+AsioConn* asio_acceptor_accept(AsioConn* acceptor){ //For backends
+	auto result=new AsioConn();
+
+	result->conn=std::make_unique<socket_type>(context, TCP);
+	acceptor->acceptor->accept(*result->conn);
+	result->conn->set_option( asio::ip::tcp::no_delay( true) );
+
+	return result;
+
+}
+
+void asio_close(AsioConn* result){
 	if(result->acceptor){
 		result->acceptor->close();
 	}
@@ -114,54 +93,19 @@ void shmem_close(ShmemConn* result){
 	delete result;
 }
 
-void shmem_read(ShmemConn* result, char* buf, int len, bool* err){
-	*err=0;
-	try{
-		if(NET){
-			asio::read(*result->conn, asio::buffer(buf, len));
-		}else{
-			auto offset=0;
-			while(len > 0){
-				writeToConn(*result->conn, result->msg_buf, READ, len, 0);
-				auto [ msg_type, arg1, arg2] = readFromConn( *result->conn, result->msg_buf);
-				memcpy(buf+offset, device_mmap+arg1, arg2);
-				offset+=arg2;
-				len-=arg2;
+void asio_read(AsioConn* result, char* buf, int len, bool* err){
+	asio::error_code ec;
+	asio::read(*result->conn, asio::buffer(buf, len), ec);
 
-				writeToConn(*result->conn, result->msg_buf, READ, 1, 0);
-			}
-			 
-		}
-	}
-	catch (asio::system_error& e){
-		*err=1;
-	}
-
+	*err=!!ec;
 
 }
 
-void shmem_write(ShmemConn* result, char* buf, int len, bool* err){
+void asio_write(AsioConn* result, char* buf, int len, bool* err){
 	*err=0;
-	try{
-		if(NET){
-			asio::write(*result->conn, asio::buffer(buf, len));
-		}else{
-			auto offset=0;
-			while(len > 0){
-				writeToConn(*result->conn, result->msg_buf, WRITE, len, 0);
-				auto [ msg_type, arg1, arg2] = readFromConn( *result->conn, result->msg_buf);
-				memcpy(device_mmap+arg1, buf+offset, arg2);
-				offset+=arg2;
-				len-=arg2;
 
-				writeToConn(*result->conn, result->msg_buf, WRITE, 1, 0);
-			}
-			 
-		}
-	}
-	catch (asio::system_error& e){
-		*err=1;
-	}
+	asio::error_code ec;
+	asio::write(*result->conn, asio::buffer(buf, len), ec);
 
-
+	*err=!!ec;
 }

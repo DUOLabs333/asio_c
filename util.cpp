@@ -70,8 +70,8 @@ uint32_t open_disk(std::string path, char** buf, int* fd){
 	return open_disk(device_fd, buf);
 }
 
-std::string getEnv(const char* _key, std::string _default){
-	auto result=std::getenv(_key);
+std::string getEnv(std::string& _key, std::string _default){
+	auto result=std::getenv(_key.c_str());
 	if (result == NULL){
 		return _default;
 	}else{
@@ -79,8 +79,8 @@ std::string getEnv(const char* _key, std::string _default){
 	}
 }
 
-int getEnv(const char* _key, int _default){
-	auto result=std::getenv(_key);
+int getEnv(std::string& _key, int _default){
+	auto result=std::getenv(_key.c_str());
 	if (result == NULL){
 		return _default;
 	}else{

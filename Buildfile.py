@@ -1,28 +1,19 @@
-COMMON_SRC_FILES=["util.cpp"]
-
-class common(BuildBase):
+class library(BuildBase):
+    
     INCLUDE_PATHS=[get_dep_path("asio", "asio/include")]
 
-    OUTPUT_NAME="shmem_connect"
+    OUTPUT_TYPE=STATIC
+    OUTPUT_NAME="asio_c"
 
-class server(common):
-
-    OUTPUT_TYPE=EXE 
-    SRC_FILES=COMMON_SRC_FILES+["Server.cpp"]
-
-class library(common):
-
-     OUTPUT_TYPE=STATIC
-
-     SRC_FILES=COMMON_SRC_FILES+["Library.cpp"]
+    SRC_FILES=["util.cpp", "Library.cpp"]
         
-class test_backend(common):
+class test_backend(BuildBase):
     OUTPUT_TYPE=EXE
     SRC_FILES=["test_backend.cpp"]
     STATIC_LIBS=[library]
     OUTPUT_NAME="test_backend"
 
-class test_client(common):
+class test_client(BuildBase):
     OUTPUT_TYPE=EXE
     SRC_FILES=["test_client.cpp"]
     STATIC_LIBS=[library]

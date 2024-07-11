@@ -1,12 +1,12 @@
-typedef struct ShmemConn ShmemConn;
+typedef struct AsioConn AsioConn;
 
-ShmemConn* shmem_connect(int id);
+AsioConn* asio_connect(int id);
 
-ShmemConn* shmem_acceptor_init(int id);
-ShmemConn* shmem_acceptor_accept(ShmemConn* acceptor);
+AsioConn* asio_acceptor_init(int id);
+AsioConn* asio_acceptor_accept(AsioConn* acceptor);
 
-void shmem_close(ShmemConn* result);
+void asio_close(AsioConn* result);
 
-void shmem_read(ShmemConn* result, char* buf, int len, bool* err);
-void shmem_write(ShmemConn* result, char* buf, int len, bool* err);
+void asio_read(AsioConn* result, char* buf, int len, bool* err);
+void asio_write(AsioConn* result, char* buf, int len, bool* err);
 

@@ -38,5 +38,5 @@ void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType m
 uint32_t open_disk(int fd, char** buf);
 uint32_t open_disk(std::string path, char** buf, int* fd);
 
-std::string getEnv(const char* _key, std::string _default);
-int getEnv(const char* _key, int _default);
+std::string getEnv(std::string& _key, std::string _default);
+int getEnv(std::string& _key, int _default);
