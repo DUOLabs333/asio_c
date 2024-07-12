@@ -142,7 +142,6 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 	
 	try{
 		uint8_t is_compressed;
-		uint8_t compressed_size;
 		
 		auto max_compressed_size=LZ4_compressBound(len);
 		conn->compressed_buf.reserve(max_compressed_size);
@@ -161,7 +160,7 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 			size=len;
 		}
 		
-		serializeInt(conn->size_buf, 0, compressed_size);
+		serializeInt(conn->size_buf, 0, size);
 		serializeInt(conn->size_buf, 4, len);
 
 
