@@ -1,11 +1,13 @@
 class library(BuildBase):
     
-    INCLUDE_PATHS=[get_dep_path("asio", "asio/include")]
+    INCLUDE_PATHS=[get_dep_path("asio", "asio/include"), get_dep_path("lz4","lib")]
 
     OUTPUT_TYPE=STATIC
     OUTPUT_NAME="asio_c"
 
-    SRC_FILES=["util.cpp", "Library.cpp"]
+    SRC_FILES=["utils.cpp", "Library.cpp"]
+
+    STATIC_LIBS=[get_dep_path("lz4", "lib/liblz4.a")]
         
 class test_backend(BuildBase):
     OUTPUT_TYPE=EXE

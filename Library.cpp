@@ -1,11 +1,18 @@
-#include "util.hpp"
+#include "utils.hpp"
+#include <asio/buffer.hpp>
 #include <asio/error_code.hpp>
+#include <asio/system_error.hpp>
+#include <cstdint>
 #include <optional>
 #include "Library.h"
+#include <lz4.h>
 
 struct AsioConn {
 	std::optional<tcp::acceptor> acceptor;
-	socket_ptr conn;
+	socket_ptr socket;
+	uint8_t size_buf[8];
+	std::vector<uint8_t> compressed_buf;
+	std::vector<uint8_t> uncompressed_buf;
 };
 
 
@@ -13,9 +20,12 @@ typedef struct {
 	std::string prefix;
 	std::string address = "192.168.64.1";
 	int port;
+	bool compress = false;
 } BackendInfo;
 
-std::vector<BackendInfo> backends = { {.prefix="STREAM", .port = 9000} };
+static int COMPRESSION_CUTOFF= 1000000/4;
+
+std::vector<BackendInfo> backends = { {.prefix="STREAM", .port = 9000, .compress=true} };
 
 
 char* device_mmap;
@@ -33,79 +43,131 @@ std::tuple<std::string, int> get_backend(int id){
 }
 
 AsioConn* asio_connect(int id){ //For clients
-	auto result=new AsioConn();
+	auto conn=new AsioConn();
 	
 	auto [address, port] = get_backend(id);
 
-	auto resolver_results=resolver.resolve(address, std::to_string(port));
+	auto resolver_conns=resolver.resolve(address, std::to_string(port));
 
 	std::vector<ip::tcp::resolver::endpoint_type> endpoints;
 
-	for(auto& result: resolver_results){
-		endpoints.push_back(result.endpoint());
+	for(auto& conn: resolver_conns){
+		endpoints.push_back(conn.endpoint());
 	}
 	
-	result->conn=std::make_unique<socket_type>(context, TCP);
+	conn->socket=std::make_unique<socket_type>(context, TCP);
 	
 	asio::error_code ec;
 	while (true){
-		asio::connect(*result->conn, endpoints, ec);
+		asio::connect(*conn->socket, endpoints, ec);
 		if (!ec){
 		    break;
 		}
 	}
-	result->conn->set_option( asio::ip::tcp::no_delay( true) );
+	conn->socket->set_option( asio::ip::tcp::no_delay( true) );
 
-	return result;
+	return conn;
 
 }
 
-AsioConn* asio_acceptor_init(int id){ //For backends
-	auto result=new AsioConn();
-
+AsioConn* asio_server_init(int id){ //For backends
+	auto server=new AsioConn();
+	
 	auto [address, port] = get_backend(id);
 	
-	result->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(address), port));
+	server->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(address), port));
 
-	return result;
+	return server;
 }
 
-AsioConn* asio_acceptor_accept(AsioConn* acceptor){ //For backends
-	auto result=new AsioConn();
+AsioConn* asio_server_accept(AsioConn* server){ //For backends
+	auto conn=new AsioConn();
 
-	result->conn=std::make_unique<socket_type>(context, TCP);
-	acceptor->acceptor->accept(*result->conn);
-	result->conn->set_option( asio::ip::tcp::no_delay( true) );
+	conn->socket=std::make_unique<socket_type>(context, TCP);
+	server->acceptor->accept(*conn->socket);
+	conn->socket->set_option( asio::ip::tcp::no_delay( true) );
 
-	return result;
+	return conn;
 
 }
 
-void asio_close(AsioConn* result){
-	if(result->acceptor){
-		result->acceptor->close();
+void asio_close(AsioConn* conn){
+	if(conn->acceptor){
+		conn->acceptor->close();
 	}
 
-	if (result->conn){
-		result->conn->close();
+	if (conn->socket){
+		conn->socket->close();
 	}
 
-	delete result;
+	delete conn;
 }
 
-void asio_read(AsioConn* result, char* buf, int len, bool* err){
-	asio::error_code ec;
-	asio::read(*result->conn, asio::buffer(buf, len), ec);
+void asio_read(AsioConn* conn, char** buf, int* len, bool* err){
+	*err=false;
 
-	*err=!!ec;
+	try{
+		uint8_t is_compressed=0;
+		asio::read(*conn->socket, std::vector<asio::mutable_buffer>{asio::buffer(&is_compressed,1),asio::buffer(conn->size_buf)});
+		auto compressed_size=deserializeInt(conn->size_buf, 0);
+    		auto uncompressed_size=deserializeInt(conn->size_buf, 4);
+	
+		conn->compressed_buf.reserve(compressed_size);
+		conn->uncompressed_buf.reserve(uncompressed_size);
+
+		asio::read(*(conn->socket), asio::buffer(conn->compressed_buf.data(), compressed_size));
+		
+		char* compressed_buf=reinterpret_cast<char*>(conn->compressed_buf.data());
+		char* uncompressed_buf=reinterpret_cast<char*>(conn->uncompressed_buf.data());
+
+		if (is_compressed){
+			*buf=uncompressed_buf;
+			*len=uncompressed_size;
+			LZ4_decompress_safe(compressed_buf, uncompressed_buf, compressed_size, uncompressed_size);
+			
+		}else{
+			*buf=compressed_buf;
+			*len=compressed_size;
+		}
+
+	}
+	catch(asio::system_error& e){
+		*err=true;
+	}
 
 }
 
-void asio_write(AsioConn* result, char* buf, int len, bool* err){
+void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 	*err=0;
+	
+	try{
+		uint8_t is_compressed;
+		uint8_t compressed_size;
+		
+		auto max_compressed_size=LZ4_compressBound(len);
+		conn->compressed_buf.reserve(max_compressed_size);
+		char* compressed_buf=reinterpret_cast<char*>(conn->compressed_buf.data());
 
-	asio::error_code ec;
-	asio::write(*result->conn, asio::buffer(buf, len), ec);
+		const char* input;
+		uint32_t size;
 
-	*err=!!ec;
+		if (len>=COMPRESSION_CUTOFF){
+			is_compressed=1;
+			size=LZ4_compress_default(buf, compressed_buf, len, max_compressed_size);
+			input=compressed_buf;
+		}else{
+			is_compressed=0;
+			input=buf;
+			size=len;
+		}
+		
+		serializeInt(conn->size_buf, 0, compressed_size);
+		serializeInt(conn->size_buf, 4, len);
+
+
+		asio::write(*(conn->socket), std::vector<asio::const_buffer>{asio::buffer(&is_compressed, 1), asio::buffer(conn->size_buf), asio::buffer(input, size)});
+	}
+	catch(asio::system_error& e){
+		*err=1;
+	}
 }
