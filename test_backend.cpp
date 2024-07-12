@@ -4,16 +4,17 @@
 #include <memory.h>
 #include <cstdlib>
 auto test_buf=new uint8_t[1024];
-auto actual_buf=new uint8_t[1024];
+char* actual_buf;
 bool err;
 int main(int argc, char** argv){
-	auto acceptor=asio_acceptor_init(0);
+	auto acceptor=asio_server_init(0);
 
-	auto client=asio_acceptor_accept(acceptor);
+	auto client=asio_server_accept(acceptor);
 
 	for(int i=0; i < 256; i++){
 		memset(test_buf, i, 1024);
-		asio_read(client, (char*)actual_buf, 1024, &err);
+		int dummy;
+		asio_read(client, &actual_buf, &dummy, &err);
 		if(memcmp(test_buf, actual_buf, 1024)){
 			printf("Buffers don't match!");
 			exit(1);
