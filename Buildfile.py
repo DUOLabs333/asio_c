@@ -5,7 +5,7 @@ class library(BuildBase):
     OUTPUT_TYPE=STATIC
     OUTPUT_NAME="asio_c"
 
-    SRC_FILES=["utils.cpp", "Library.cpp"]
+    SRC_FILES=["utils.cpp", "asio_c.cpp"]
 
     STATIC_LIBS=[get_dep_path("lz4", "lib/liblz4.a")]
         

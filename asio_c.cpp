@@ -4,7 +4,7 @@
 #include <asio/system_error.hpp>
 #include <cstdint>
 #include <optional>
-#include "Library.h"
+#include "asio_c.h"
 #include <lz4.h>
 
 struct AsioConn {
@@ -21,9 +21,12 @@ typedef struct {
 	std::string address = "192.168.64.1";
 	int port;
 	bool compress = false;
+
+	bool resolved = false;
 } BackendInfo;
 
 static int COMPRESSION_CUTOFF= 1000000/4;
+//static int COMPRESSION_CUTOFF= std::numeric_limits<int>::max(); //Effectively disable compression
 
 std::vector<BackendInfo> backends = { {.prefix="STREAM", .port = 9000, .compress=true} };
 
@@ -36,10 +39,15 @@ tcp::resolver resolver(context);
 std::tuple<std::string, int> get_backend(int id){
 	auto& backend=backends.at(id);
 
-	auto address_key=std::format("{}_ADDRESS", backend.prefix);
-	auto port_key=std::format("{}_PORT", backend.prefix);
+	if (!backend.resolved){ //Cache environment variable lookup
+		backend.address=getEnv("CONN_ADDRESS", getEnv(std::format("{}_ADDRESS", backend.prefix),backend.address));
 
-	return {getEnv(address_key, backend.address), getEnv(port_key, backend.port)};
+		backend.port=getEnv("CONN_PORT", getEnv(std::format("{}_PORT", backend.prefix),backend.port));
+
+		backend.resolved=true;
+	}
+
+	return {backend.address, backend.port};
 }
 
 AsioConn* asio_connect(int id){ //For clients
