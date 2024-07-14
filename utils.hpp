@@ -1,11 +1,12 @@
 #include <asio.hpp>
-#include <cstdint>
 
+#include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 
-using namespace asio;
+namespace ip = asio::ip;
+
 using namespace ip;
 
 enum MessageType{

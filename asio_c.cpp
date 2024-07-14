@@ -2,17 +2,53 @@
 #include <asio/buffer.hpp>
 #include <asio/error_code.hpp>
 #include <asio/system_error.hpp>
-#include <cstdint>
 #include <optional>
 #include "asio_c.h"
 #include <lz4.h>
+#include <bit>
 
+template<typename T> class buffer { //Since we can't guarentee that vector.reserve will make the data at (data()+size(), data()+capacity()] usable (On GCC, this seems to be true though).
+	private:
+		std::unique_ptr<T> buf = NULL;
+		uint32_t cap = 0;
+	public:
+		uint32_t capacity(){
+			return cap;
+		}
+
+		T* data() {
+			return buf.get();
+		}
+
+		void reserve(uint32_t new_cap){
+			if (cap >= new_cap){
+				return;
+			}else{
+				#if 1 //Bit-fiddling --- see https://stackoverflow.com/questions/466204/rounding-up-to-next-power-of-2
+					new_cap--;
+					new_cap |= new_cap >> 1;
+					new_cap |= new_cap >> 2;
+					new_cap |= new_cap >> 4;
+					new_cap |= new_cap >> 8;
+					new_cap |= new_cap >> 16;
+				#else //In C++20
+					new_cap=std::bit_ceil(new_cap);	
+				#endif
+				auto old_ptr = buf.release();
+				buf.reset((T*)realloc(old_ptr, new_cap));
+				cap=new_cap;
+				return;
+				
+			}
+		}
+};
 struct AsioConn {
 	std::optional<tcp::acceptor> acceptor;
 	socket_ptr socket;
 	uint8_t size_buf[8];
-	std::vector<uint8_t> compressed_buf;
-	std::vector<uint8_t> uncompressed_buf;
+	buffer<uint8_t> compressed_buf;
+	buffer<uint8_t> uncompressed_buf;
+	buffer<char> output_buf; //For applications that need to write the result of an operation to a buffer, then pass it to asio_write
 };
 
 
@@ -34,7 +70,6 @@ std::vector<BackendInfo> backends = { {.prefix="STREAM", .port = 9000, .compress
 char* device_mmap;
 asio::io_context context;
 tcp::resolver resolver(context);
-
 
 std::tuple<std::string, int> get_backend(int id){
 	auto& backend=backends.at(id);
@@ -177,4 +212,11 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 	catch(asio::system_error& e){
 		*err=1;
 	}
+}
+
+char* asio_get_buf(AsioConn* conn, uint32_t* cap){
+	conn->output_buf.reserve(*cap);
+	*cap=conn->output_buf.capacity();
+
+	return conn->output_buf.data();
 }
