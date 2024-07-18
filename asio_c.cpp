@@ -158,7 +158,11 @@ void asio_close(AsioConn* conn){
 
 void asio_read(AsioConn* conn, char** buf, int* len, bool* err){
 	*err=false;
-
+	 
+	 if (conn==NULL){
+	 	*err=true;
+		return;
+	}
 	try{
 		uint8_t is_compressed=0;
 		asio::read(*conn->socket, std::vector<asio::mutable_buffer>{asio::buffer(&is_compressed,1),asio::buffer(conn->size_buf)});
@@ -191,8 +195,11 @@ void asio_read(AsioConn* conn, char** buf, int* len, bool* err){
 }
 
 void asio_write(AsioConn* conn, char* buf, int len, bool* err){
-	*err=0;
-	
+	*err=false;
+	if (conn==NULL){
+		*err=true;
+		return;
+	}
 	try{
 		uint8_t is_compressed;
 		
