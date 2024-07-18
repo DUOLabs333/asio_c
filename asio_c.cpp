@@ -5,6 +5,9 @@
 #include <optional>
 #include "asio_c.h"
 #include <lz4.h>
+#include <mutex>
+#include <array>
+
 #include <bit>
 
 template<typename T> class buffer { //Since we can't guarentee that vector.reserve will make the data at (data()+size(), data()+capacity()] usable (On GCC, this seems to be true though).
@@ -59,12 +62,14 @@ typedef struct {
 	bool compress = false;
 
 	bool resolved = false;
+
+	std::mutex mu;
 } BackendInfo;
 
 static int COMPRESSION_CUTOFF= 1000000/4;
 //static int COMPRESSION_CUTOFF= std::numeric_limits<int>::max(); //Effectively disable compression
 
-std::vector<BackendInfo> backends = { {.prefix="STREAM", .port = 9000, .compress=true} };
+BackendInfo backends[] = { {.prefix="STREAM", .port = 9000, .compress=true} , {.prefix="CLIP", .port= 9001}};
 
 
 char* device_mmap;
@@ -72,8 +77,9 @@ asio::io_context context;
 tcp::resolver resolver(context);
 
 std::tuple<std::string, int> get_backend(int id){
-	auto& backend=backends.at(id);
+	auto& backend =backends[id];
 
+	backend.mu.lock();
 	if (!backend.resolved){ //Cache environment variable lookup
 		backend.address=getEnv("CONN_ADDRESS", getEnv(std::format("{}_ADDRESS", backend.prefix),backend.address));
 
@@ -81,6 +87,7 @@ std::tuple<std::string, int> get_backend(int id){
 
 		backend.resolved=true;
 	}
+	backend.mu.unlock();
 
 	return {backend.address, backend.port};
 }
@@ -135,6 +142,9 @@ AsioConn* asio_server_accept(AsioConn* server){ //For backends
 }
 
 void asio_close(AsioConn* conn){
+	if (conn==NULL){
+		return;
+	}
 	if(conn->acceptor){
 		conn->acceptor->close();
 	}
