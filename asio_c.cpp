@@ -49,6 +49,7 @@ struct AsioConn {
 	std::optional<tcp::acceptor> acceptor;
 	socket_ptr socket;
 	uint8_t size_buf[8];
+	int id;
 	buffer<uint8_t> compressed_buf;
 	buffer<uint8_t> uncompressed_buf;
 	buffer<char> output_buf; //For applications that need to write the result of an operation to a buffer, then pass it to asio_write
@@ -59,7 +60,7 @@ typedef struct {
 	std::string prefix;
 	std::string address = "192.168.64.1";
 	int port;
-	bool compress = false;
+	bool compression = false;
 
 	bool resolved = false;
 
@@ -69,7 +70,7 @@ typedef struct {
 static int COMPRESSION_CUTOFF= 1000000/4;
 //static int COMPRESSION_CUTOFF= std::numeric_limits<int>::max(); //Effectively disable compression
 
-BackendInfo backends[] = { {.prefix="STREAM", .port = 9000, .compress=true} , {.prefix="CLIP", .port= 9001}};
+BackendInfo backends[] = { {.prefix="STREAM", .port = 9000, .compression=true} , {.prefix="CLIP", .port= 9001}, {.prefix="AV", .port = 9002}};
 
 
 char* device_mmap;
@@ -115,6 +116,8 @@ AsioConn* asio_connect(int id){ //For clients
 		}
 	}
 	conn->socket->set_option( asio::ip::tcp::no_delay( true) );
+	
+	conn->id=id;
 
 	return conn;
 
@@ -126,6 +129,8 @@ AsioConn* asio_server_init(int id){ //For backends
 	auto [address, port] = get_backend(id);
 	
 	server->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(address), port));
+	
+	server->id=id;
 
 	return server;
 }
@@ -136,6 +141,8 @@ AsioConn* asio_server_accept(AsioConn* server){ //For backends
 	conn->socket=std::make_unique<socket_type>(context, TCP);
 	server->acceptor->accept(*conn->socket);
 	conn->socket->set_option( asio::ip::tcp::no_delay( true) );
+
+	conn->id=server->id;
 
 	return conn;
 
@@ -210,7 +217,7 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 		const char* input;
 		uint32_t size;
 
-		if (len>=COMPRESSION_CUTOFF){
+		if ((backends[conn->id].compression) && (len>=COMPRESSION_CUTOFF)){
 			is_compressed=1;
 			size=LZ4_compress_default(buf, compressed_buf, len, max_compressed_size);
 			input=compressed_buf;
