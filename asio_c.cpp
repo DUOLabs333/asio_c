@@ -49,6 +49,7 @@ struct AsioConn {
 	std::optional<tcp::acceptor> acceptor;
 	socket_ptr socket;
 	uint8_t size_buf[8];
+	std::array<uint8_t, 12> msg_buf;
 	int id;
 	buffer<uint8_t> compressed_buf;
 	buffer<uint8_t> uncompressed_buf;
@@ -60,6 +61,10 @@ typedef struct {
 	std::string prefix;
 	std::string address = "192.168.64.1";
 	int port;
+
+	bool use_tcp = true; //However, hopefully, at some point, we can either fully depreciate using TCP, or gate it behind some more conditions so only a few people actually need it enabled.
+
+
 	bool compression = false;
 
 	bool resolved = false;
@@ -73,49 +78,69 @@ static int COMPRESSION_CUTOFF= 1000000/4;
 BackendInfo backends[] = { {.prefix="STREAM", .port = 9000, .compression=true} , {.prefix="CLIP", .port= 9001}, {.prefix="AV", .port = 9002}};
 
 
-char* device_mmap;
 asio::io_context context;
 tcp::resolver resolver(context);
 
-std::tuple<std::string, int> get_backend(int id){
+auto SERVER_SOCKET=get_server_socket(); //get_server_socket returns a string
+
+void connect_to_server(socket_type& socket){
+	asio::error_code ec;
+	while(true){
+		asio::connect(socket, std::vector<asio::local::stream_protocol::endpoint>({asio::local::stream_protocol::endpoint(SERVER_SOCKET)}), ec);
+		if (!ec){
+			break;
+		}
+	}
+}
+
+auto& get_backend(int id){
 	auto& backend =backends[id];
 
 	backend.mu.lock();
 	if (!backend.resolved){ //Cache environment variable lookup
-		backend.address=getEnv("CONN_ADDRESS", getEnv(std::format("{}_ADDRESS", backend.prefix),backend.address));
+		backend.address=getEnv("CONN_ADDRESS", getEnv(std::format("CONN_{}_ADDRESS", backend.prefix),backend.address));
 
-		backend.port=getEnv("CONN_PORT", getEnv(std::format("{}_PORT", backend.prefix),backend.port));
-
+		backend.port=getEnv("CONN_PORT", getEnv(std::format("CONN_{}_PORT", backend.prefix),backend.port));
+		
+		backend.use_tcp = getEnv("CONN_USE_TCP", getEnv(std::format("CONN_{}_USE_TCP", backend.prefix), backend.use_tcp));
 		backend.resolved=true;
 	}
 	backend.mu.unlock();
 
-	return {backend.address, backend.port};
+	return backend;
 }
 
 AsioConn* asio_connect(int id){ //For clients
 	auto conn=new AsioConn();
 	
-	auto [address, port] = get_backend(id);
-
-	auto resolver_conns=resolver.resolve(address, std::to_string(port));
-
-	std::vector<ip::tcp::resolver::endpoint_type> endpoints;
-
-	for(auto& conn: resolver_conns){
-		endpoints.push_back(conn.endpoint());
-	}
+	auto& backend = get_backend(id);
 	
-	conn->socket=std::make_unique<socket_type>(context, TCP);
-	
-	asio::error_code ec;
-	while (true){
-		asio::connect(*conn->socket, endpoints, ec);
-		if (!ec){
-		    break;
+	if (backend.use_tcp){
+		auto resolver_conns=resolver.resolve(backend.address, std::to_string(backend.port));
+
+		std::vector<ip::tcp::resolver::endpoint_type> endpoints;
+
+		for(auto& conn: resolver_conns){
+			endpoints.push_back(conn.endpoint());
 		}
+		
+		conn->socket=std::make_unique<socket_type>(context, TCP);
+		
+		asio::error_code ec;
+		while (true){
+			asio::connect(*conn->socket, endpoints, ec);
+			if (!ec){
+			    break;
+			}
+		}
+		conn->socket->set_option( asio::ip::tcp::no_delay( true) );
+	}else{
+		conn->socket=std::make_unique<socket_type>(context, UNIX);
+		connect_to_server(*conn->socket);
+		writeToConn(*conn->socket, conn->msg_buf, CONNECT, id, 0);
+		readFromConn(*conn->socket, conn->msg_buf); 
+
 	}
-	conn->socket->set_option( asio::ip::tcp::no_delay( true) );
 	
 	conn->id=id;
 
@@ -126,9 +151,14 @@ AsioConn* asio_connect(int id){ //For clients
 AsioConn* asio_server_init(int id){ //For backends
 	auto server=new AsioConn();
 	
-	auto [address, port] = get_backend(id);
+	auto& backend = get_backend(id);
 	
-	server->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(address), port));
+	if(backend.use_tcp){
+		server->acceptor=tcp::acceptor(context,tcp::endpoint(asio::ip::make_address(backend.address), backend.port));
+	}else{
+		connect_to_server(*server->socket);
+		writeToConn(*server->socket, server->msg_buf, INIT, id, 0);
+	}
 	
 	server->id=id;
 
