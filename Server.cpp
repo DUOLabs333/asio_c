@@ -17,6 +17,10 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 
+#ifdef __APPLE__
+	#include <sys/disk.h>
+#endif
+
 std::string ADDRESS=getEnv("CONN_SERVER_ADDRESS", "192.168.64.1");
 int PORT=getEnv("CONN_SERVER_PORT", 4000);
 bool is_guest = getEnv("CONN_SERVER_IS_GUEST", false); 
@@ -173,7 +177,8 @@ void HandleConn(socket_ptr from, socket_ptr to){ //Sending messages from -> to
 						#ifdef __linux__
 							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
 						#elif defined(__APPLE__)
-							fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
+							//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
+							fcntl(write.get().fd, F_FULLFSYNC);
 						#else
 							fsync(write.get().fd);
 						#endif
