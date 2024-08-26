@@ -10,11 +10,13 @@ namespace local = asio::local;
 
 
 enum MessageType{
-	CONNECT = 0,
-	INIT = 4,
-	ESTABLISH = 1,
-	WRITE = 3,
-	SEGMENT = 5
+	CONNECTTO = 0 ,
+	CONNECTFROM,
+	INIT,
+	ESTABLISH,
+	WRITETO,
+	WRITEFROM,
+	SEGMENT
 };
 
 typedef asio::generic::stream_protocol::socket socket_type;

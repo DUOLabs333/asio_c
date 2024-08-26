@@ -134,8 +134,7 @@ AsioConn* asio_connect(int id){ //For clients
 	}else{
 		conn->socket=std::make_unique<socket_type>(context, UNIX);
 		connect_to_server(*conn->socket);
-		writeToConn(*conn->socket, conn->msg_buf, CONNECT, id, 0);
-		readFromConn(*conn->socket, conn->msg_buf); 
+		writeToConn(*conn->socket, conn->msg_buf, CONNECTTO, id, 0);
 
 	}
 	
@@ -283,7 +282,7 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 
 			asio::write(*(conn->socket), std::vector<asio::const_buffer>{asio::buffer(&is_compressed, 1), asio::buffer(conn->size_buf), asio::buffer(input, size)});
 		}else{
-			writeToConn(*conn->socket, conn->msg_buf, WRITE, len, 0);
+			writeToConn(*conn->socket, conn->msg_buf, WRITETO, len, 0);
 			asio::write(*conn->socket, asio::buffer(buf, len));
 		}
 	}
