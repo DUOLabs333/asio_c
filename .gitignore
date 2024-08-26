@@ -1,5 +1,2 @@
 test_backend
 test_client
-*.o
-*.a
-*.pyc

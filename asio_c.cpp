@@ -9,41 +9,7 @@
 #include <array>
 
 typedef std::unique_ptr<socket_type> socket_ptr;
-template<typename T> class buffer { //Since we can't guarentee that vector.reserve will make the data at (data()+size(), data()+capacity()] usable (On GCC, this seems to be true though).
-	private:
-		std::unique_ptr<T> buf = NULL;
-		uint32_t cap = 0;
-	public:
-		uint32_t capacity(){
-			return cap;
-		}
 
-		T* data() {
-			return buf.get();
-		}
-
-		void reserve(uint32_t new_cap){
-			if (cap >= new_cap){
-				return;
-			}else{
-				#if 1 //Bit-fiddling --- see https://stackoverflow.com/questions/466204/rounding-up-to-next-power-of-2
-					new_cap--;
-					new_cap |= new_cap >> 1;
-					new_cap |= new_cap >> 2;
-					new_cap |= new_cap >> 4;
-					new_cap |= new_cap >> 8;
-					new_cap |= new_cap >> 16;
-				#else //In C++20
-					new_cap=std::bit_ceil(new_cap);	
-				#endif
-				auto old_ptr = buf.release();
-				buf.reset((T*)realloc(old_ptr, new_cap));
-				cap=new_cap;
-				return;
-				
-			}
-		}
-};
 struct AsioConn {
 	std::optional<ip::tcp::acceptor> acceptor;
 	socket_ptr socket;
@@ -135,7 +101,8 @@ AsioConn* asio_connect(int id){ //For clients
 	}else{
 		conn->socket=std::make_unique<socket_type>(context, UNIX);
 		connect_to_server(*conn->socket);
-		writeToConn(*conn->socket, conn->msg_buf, CONNECTTO, id, 0);
+		writeToConn(*conn->socket, conn->msg_buf, CONNECT_LOCAL, id, 0);
+		readFromConn(*conn->socket, conn->msg_buf);
 
 	}
 	
@@ -283,8 +250,10 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 
 			asio::write(*(conn->socket), std::vector<asio::const_buffer>{asio::buffer(&is_compressed, 1), asio::buffer(conn->size_buf), asio::buffer(input, size)});
 		}else{
-			writeToConn(*conn->socket, conn->msg_buf, WRITETO, len, 0);
+			writeToConn(*conn->socket, conn->msg_buf, WRITE_LOCAL, len, 0);
 			asio::write(*conn->socket, asio::buffer(buf, len));
+
+			readFromConn(*conn->socket, conn->msg_buf);
 		}
 	}
 	catch(asio::system_error& e){

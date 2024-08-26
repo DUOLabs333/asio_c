@@ -33,45 +33,6 @@ void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType m
 	asio::write(socket, asio::buffer(buf));
 }
 
-uint32_t open_disk(int fd, char** buf){
-	auto size=lseek(fd, 0, SEEK_END);
-	#ifdef __APPLE__ //Because lseek doesn't work on block devices on MacOS
-		uint32_t bcount;
-		auto ret1=ioctl(fd, DKIOCGETBLOCKCOUNT, &bcount);
-
-		uint32_t bsize;
-		auto ret2= ioctl(fd, DKIOCGETBLOCKSIZE, &bsize);
-
-		if ((ret1 < 0) || (ret2 < 0)){
-			fprintf(stderr, "Error getting size of disk");
-			exit(2);
-		}
-
-		size=bcount*bsize;
-	#endif
-	lseek(fd, 0, SEEK_SET);
-	
-	if (buf!= NULL){
-		*buf=(char*)mmap(NULL, size, PROT_WRITE| PROT_READ, MAP_SHARED, fd, 0);
-	}
-
-	return size;
-}
-
-uint32_t open_disk(std::string path, char** buf, int* fd){
-	int device_fd=open(path.c_str(), O_RDWR);
-	if (device_fd == -1){
-		auto format_string=std::format("Error opening the disk {}", path);
-		perror(format_string.c_str());
-		exit(2);
-	}
-	
-	if (fd != NULL){
-		*fd=device_fd;
-	}
-	return open_disk(device_fd, buf);
-}
-
 std::string getEnv(std::string _key, std::string _default){
 	auto result=std::getenv(_key.c_str());
 	if (result == NULL){
