@@ -6,8 +6,8 @@
 #include <sys/mman.h>
 
 namespace ip = asio::ip;
+namespace local = asio::local;
 
-using namespace ip;
 
 enum MessageType{
 	CONNECT = 0,
@@ -21,7 +21,9 @@ typedef asio::generic::stream_protocol::socket socket_type;
 typedef std::unique_ptr<socket_type> socket_ptr;
 
 #define TCP ip::tcp::v4().protocol()
-#define UNIX asio::local::stream_protocol().protocol()
+#define UNIX local::stream_protocol().protocol()
+
+extern std::string SERVER_SOCKET;
 
 uint32_t deserializeInt(uint8_t* buf, int i);
 void serializeInt(uint8_t* buf, int i, uint32_t val);

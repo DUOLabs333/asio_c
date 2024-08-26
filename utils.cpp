@@ -6,6 +6,8 @@
 	#include <sys/disk.h>
 #endif
 
+std::string SERVER_SOCKET = getEnv("CONN_SERVER_SOCKET", "/tmp/conn_server.sock");
+
 uint32_t deserializeInt(uint8_t* buf, int i){ //Deserialzes from little endian in endian-agnostic way
     return buf[i+0] | (buf[i+1] << 8) | (buf[i+2] << 16) | (buf[i+3] << 24);
 }
@@ -87,3 +89,5 @@ int getEnv(std::string _key, int _default){
 		return atoi(result);
 	}
 }
+
+
