@@ -10,17 +10,16 @@ namespace local = asio::local;
 
 
 enum MessageType{
-	CONNECTTO = 0 ,
-	CONNECTFROM,
+	CONNECT_LOCAL = 0 ,
+	CONNECT_REMOTE,
 	INIT,
 	ESTABLISH,
-	WRITETO,
-	WRITEFROM,
+	WRITE_LOCAL,
+	WRITE_REMOTE,
 	SEGMENT
 };
 
 typedef asio::generic::stream_protocol::socket socket_type;
-typedef std::unique_ptr<socket_type> socket_ptr;
 
 #define TCP ip::tcp::v4().protocol()
 #define UNIX local::stream_protocol().protocol()

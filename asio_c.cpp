@@ -8,6 +8,7 @@
 #include <mutex>
 #include <array>
 
+typedef std::unique_ptr<socket_type> socket_ptr;
 template<typename T> class buffer { //Since we can't guarentee that vector.reserve will make the data at (data()+size(), data()+capacity()] usable (On GCC, this seems to be true though).
 	private:
 		std::unique_ptr<T> buf = NULL;

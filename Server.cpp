@@ -26,21 +26,23 @@ int PORT=getEnv("CONN_SERVER_PORT", 4000);
 bool is_guest = getEnv("CONN_SERVER_IS_GUEST", false); 
 
 int NUM_SEGMENTS=100;
-
-int h2g_fd = -1;
-int g2h_fd = -1;
+typedef std::shared_ptr<socket_type> socket_ptr;
 
 typedef struct {
 	uint32_t offset;
 	uint32_t size;
 } SegmentInfo;
-std::vector<SegmentInfo> segment_to_info;
 
-std::queue<int> available_segments;
-std::mutex as_mutex;
-std::condition_variable as_cv;
+typedef struct {
+	std::string file;
+	int fd = -1;
+	std::mutex mu;
+	std::condition_variable cv;
+	std::vector<SegmentInfo> segment_to_info; //You pop off structures, then add them back (using std::move for pop and emplace)
+	std::queue<int> available_segments;
+} DriveInfo;
 
-std::atomic<int> thread_counter = 0;
+DriveInfo H2G, G2H; //Fill in path information in main()
 
 typedef struct {
 	 socket_ptr conn = NULL;
@@ -72,38 +74,45 @@ void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, 
 	}
 }
 
-auto& acquireSegment(int& segment){
-	std::unique_lock lk(as_mutex);
-	as_cv.wait(lk, []{return !available_segments.empty();});
-	
-	segment=available_segments.front();
-	available_segments.pop();
-	return segment_to_info[segment];
+auto& acquireSegment(DriveInfo& info, int& segment){
+
+	std::unique_lock lk(info.mu);
+	info.cv.wait(lk, [&]{ return !info.available_segments.empty();});
+
+	segment=info.available_segments.front();
+	info.available_segments.pop();
+	return info.segment_to_info[segment];
 	
 }
 
-void releaseSegment(int& segment){
+void releaseSegment(DriveInfo& info, int& segment){
 	if (segment == -1){
 		return;
 	}
-	std::unique_lock<std::mutex> lk(as_mutex);
-	available_segments.push(segment);
-	as_cv.notify_all();
+	std::unique_lock lk(info.mu);
+	info.available_segments.push(segment);
+	info.cv.notify_all();
 
 	segment=-1;
 }
 
-void HandleConn(socket_ptr socket){
+void HandleConn(socket_ptr from, socket_ptr to){ //Sending messages from -> to
 	std::array<uint8_t, 12> message_buf;
-	socket_ptr to = NULL;
+	auto read = std::ref(G2H);
+	auto write = std::ref(H2G);
+
+	if(is_guest){ //By default, read and write are set up for host, not guest
+		std::swap(read, write);
+	}
+
 	try {
 		for (;;){
-			auto [ msg_type, arg1, arg2 ] = readFromConn(*socket, message_buf);
+			auto [ msg_type, arg1, arg2 ] = readFromConn(*from, message_buf);
 			switch (msg_type){
 
-				case (CONNECTTO): //Guest wants to connect to host. Therefore, this will only ever be run by the guest.
+				case (CONNECT_LOCAL): //Guest wants to connect to host. Therefore, this will only ever be run by the guest.
 				{
-					to = std::make_unique<socket_type>(context, TCP);
+					to = std::make_shared<socket_type>(context, TCP);
 					asio::error_code ec;
 					while(true){
 						to->connect(ip::tcp::endpoint(ip::make_address(ADDRESS), PORT), ec);
@@ -112,15 +121,17 @@ void HandleConn(socket_ptr socket){
 						}
 					}
 
-					writeToConn(*to, message_buf, CONNECTFROM, arg1, arg2); //Essentially forwarding the message.
+					writeToConn(*to, message_buf, CONNECT_REMOTE, arg1, arg2); //Essentially forwarding the message to remote.
 
 					readFromConn(*to, message_buf); //Wait for confirmation
-						
+					std::thread(HandleConn, to, from).detach();
+					break;		
 				}
-				case (CONNECTFROM): //Guest wants to connect to host. Therefore, this will only be run by the host.
+				case (CONNECT_REMOTE): //Host recieved notification that a guest is trying to connect. Therefore, this will only run on the host
 					{
 					b2u_mutex.lock();
-					backend_to_unconnected_clients[arg1].push(std::move(socket));
+
+					backend_to_unconnected_clients[arg1].push(from);
 					b2u_mutex.unlock();
 
 					writeToBackend(arg1, message_buf, ESTABLISH, 0, 0); //Tell backend to create a new connection
@@ -129,23 +140,34 @@ void HandleConn(socket_ptr socket){
 					return;
 					break;	
 					}
-				case (ESTABLISH): //New connection spawned from the backend. This serves to simulate connecting directly to a port.
+				case (ESTABLISH): //Server tells backend to make a new connection. This serves to simulate connecting directly to a port.
 					{
 						b2u_mutex.lock();
 						to = std::move(backend_to_unconnected_clients[arg1].front()); //This is safe, as the only reason why an ESTABLISH would be sent is if there's a new connection in the first place
 						backend_to_unconnected_clients[arg1].pop();
 						b2u_mutex.unlock();
 						
-						writeToConn(*to, message_buf, CONNECTFROM, 1, 0); //Send confirmation back, indicating that the setup is finished
+						writeToConn(*to, message_buf, ESTABLISH, 1, 0); //Send confirmation back, indicating that the setup is finished
+
+						std::thread(HandleConn, to, from).detach();
 						break;
 					}
 
-				case (WRITETO): //When one side initiates a write 
+				case (WRITE_LOCAL): //When one side initiates a write 
 					{
 
-					writeToConn(*to, WRITEFROM, arg1, arg2);
-					auto& segment = acquireSegment(info.segment);
-					ssize_t size=std::min(segment.size, arg1);
+					writeToConn(*to, message_buf, WRITE_REMOTE, arg1, arg2);
+
+					auto len = arg1;
+					int id = -1;
+
+					auto& segment = acquireSegment(write, id);
+
+					while (len>0){
+						auto size=std::min(segment.size, len);
+						
+
+					}
 					
 					writeToConn(*info.conn, message_buf, SEGMENT, segment.offset, size);
 					
