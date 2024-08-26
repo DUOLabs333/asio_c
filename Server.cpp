@@ -292,15 +292,12 @@ void BackendServer(){
 
 }
 
-int main(int argc, char** argv){
-	std::string H2G_FILE=getEnv("CONN_SERVER_H2G_FILE", "/dev/rdisk4");
-std::string G2H_FILE=getEnv("CONN_SERVER_G2H_FILE", "/dev/rdisk5");
-	
+int main(int argc, char** argv){	
 	std::string H2G_DEFAULT_FILE = "";
 	std::string G2H_DEFAULT_FILE = "";
 	#ifdef __APPLE__
-		H2G_DEFAULT_FILE="/dev/disk4";
-		G2H_DEFAULT_FILE="/dev/disk5";
+		H2G_DEFAULT_FILE="/dev/rdisk4";
+		G2H_DEFAULT_FILE="/dev/rdisk5";
 	#elif defined(__linux__)
 		H2G_DEFAULT_FILE = "/dev/disk/by-id/conn-h2g";
 		G2H_DEFAULT_FILE = "/dev/disk/by-id/conn-g2h";
