@@ -55,6 +55,8 @@ std::unordered_map<int, BackendInfo> backend_to_info;
 std::shared_mutex b2i_mutex;
 
 std::unordered_map<int, std::queue<socket_ptr>> backend_to_unconnected_clients;
+std::unordered_map<int, std::condition_variable_any> backend_to_cv; //Allows the server to wait for a backend
+
 std::mutex b2u_mutex;
 
 asio::io_context context;
@@ -135,14 +137,17 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 					std::thread(HandleConn, to, from).detach();
 					break;		
 				}
-				case (CONNECT_REMOTE): //Host recieved notification that a guest is trying to connect. Therefore, this will only run on the host
+				case (CONNECT_REMOTE): //Host received notification that a guest is trying to connect. Therefore, this will only run on the host
 					{
+					auto id = arg1;
 					b2u_mutex.lock();
 
-					backend_to_unconnected_clients[arg1].push(std::move(from));
+					backend_to_unconnected_clients[id].push(std::move(from));
 					b2u_mutex.unlock();
 
-					writeToBackend(arg1, message_buf, ESTABLISH, 0, 0); //Tell backend to create a new connection
+					std::shared_lock lk(b2i_mutex);
+					backend_to_cv[id].wait(lk, [&]{return backend_to_info.contains(id);}); //Wait for backend to exist
+					writeToBackend(id, message_buf, ESTABLISH, 0, 0); //Tell backend to create a new connection
 
 					//We don't have to do anything else, since the backend will pick it up from here
 					return;
@@ -290,7 +295,10 @@ void HandleBackend(socket_ptr socket){
 				}
 			}
 		}
+		std::unique_lock lk(b2i_mutex); //We're going to modify some things
 		backend_to_info[id].conn=std::move(socket);
+		backend_to_cv[id].notify_all(); //Tell all threads that are waiting that this specific backend is available
+		writeToConn(*backend_to_info[id].conn, message_buf, CONFIRM, 0, 0);
 
 	}
 }
