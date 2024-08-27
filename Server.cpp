@@ -1,4 +1,5 @@
 #include "utils.hpp"
+#include <asio/error_code.hpp>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -61,6 +62,17 @@ std::mutex b2u_mutex;
 
 asio::io_context context;
 
+auto SocketClose(socket_ptr socket){
+	if (!socket){
+		return;
+	}
+	
+	asio::error_code ec;
+	//Maybe also do a graceful shutdown?
+	socket->close(ec);
+}
+
+
 void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, uint8_t arg1, uint8_t arg2){
 	b2i_mutex.lock_shared();
 	auto& info=backend_to_info[key];
@@ -72,7 +84,7 @@ void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, 
 	}
 	catch (asio::system_error& e){
 		std::unique_lock lk(b2i_mutex);
-		info.conn->close();
+		SocketClose(info.conn);
 		backend_to_info.erase(key);
 
 	}
@@ -227,14 +239,9 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 
 	catch (asio::system_error&){
 		releaseSegment(write.get(), segment_id);
-		
-		if (from){
-			from->close();
-		}
 
-		if (to){
-			to->close();
-		}
+		SocketClose(from);
+		SocketClose(to);
 
 
 	}
@@ -290,12 +297,12 @@ void HandleBackend(socket_ptr socket){
 				}
 
 				if(still_alive){
-					socket->close();
+					SocketClose(socket);
 					return;
 				}
 			}
 		}
-		std::unique_lock lk(b2i_mutex); //We're going to modify some things
+		std::unique_lock lk(b2i_mutex); //We're going to modify the map(ping)
 		backend_to_info[id].conn=std::move(socket);
 		backend_to_cv[id].notify_all(); //Tell all threads that are waiting that this specific backend is available
 		writeToConn(*backend_to_info[id].conn, message_buf, CONFIRM, 0, 0);

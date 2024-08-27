@@ -62,5 +62,3 @@ int getEnv(std::string _key, int _default){
 		return atoi(result);
 	}
 }
-
-
