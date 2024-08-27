@@ -33,6 +33,18 @@ void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType m
 	asio::write(socket, asio::buffer(buf));
 }
 
+MessageType peekFromConn(socket_type& socket){
+	std::array<uint8_t,4> buf;
+	int bytes_read=0;
+
+	while(bytes_read < buf.max_size()){
+		bytes_read+=socket.receive(asio::buffer(buf), asio::socket_base::message_peek);
+	}
+
+	return static_cast<MessageType>(deserializeInt(buf.data(),0));
+}
+
+
 std::string getEnv(std::string _key, std::string _default){
 	auto result=std::getenv(_key.c_str());
 	if (result == NULL){

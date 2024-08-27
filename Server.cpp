@@ -23,7 +23,7 @@
 
 std::string ADDRESS=getEnv("CONN_SERVER_ADDRESS", "192.168.64.1");
 int PORT=getEnv("CONN_SERVER_PORT", 4000);
-bool is_guest = getEnv("CONN_SERVER_IS_GUEST", false); 
+bool is_guest; 
 
 int NUM_SEGMENTS=100;
 
@@ -64,8 +64,8 @@ void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, 
 	auto& info=backend_to_info[key];
 	b2i_mutex.unlock_shared();
 
-	std::unique_lock lk(info.mu);
 	try{
+		std::unique_lock lk(info.mu);
 		writeToConn(*info.conn, buf, msg_type, arg1, arg2);
 	}
 	catch (asio::system_error& e){
@@ -98,7 +98,7 @@ void releaseSegment(DriveInfo& info, int& segment){
 	segment=-1;
 }
 
-void HandleConn(socket_ptr from, socket_ptr to){ //Sending messages from -> to
+void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NULL)){ //Sending messages from -> to
 	std::array<uint8_t, 12> message_buf;
 	auto read = std::ref(G2H);
 	auto write = std::ref(H2G);
@@ -113,6 +113,8 @@ void HandleConn(socket_ptr from, socket_ptr to){ //Sending messages from -> to
 	try {
 		for (;;){
 			auto [ msg_type, arg1, arg2 ] = readFromConn(*from, message_buf);
+			printf("Hi!\n");
+			printf("%i\n", msg_type);
 			switch (msg_type){
 
 				case (CONNECT_LOCAL): //Guest wants to connect to host. Therefore, this will only ever be run by the guest.
@@ -137,7 +139,7 @@ void HandleConn(socket_ptr from, socket_ptr to){ //Sending messages from -> to
 					{
 					b2u_mutex.lock();
 
-					backend_to_unconnected_clients[arg1].push(from);
+					backend_to_unconnected_clients[arg1].push(std::move(from));
 					b2u_mutex.unlock();
 
 					writeToBackend(arg1, message_buf, ESTABLISH, 0, 0); //Tell backend to create a new connection
@@ -234,6 +236,11 @@ void HandleConn(socket_ptr from, socket_ptr to){ //Sending messages from -> to
 
 
 }
+
+
+auto HandleConn1(socket_ptr socket){
+	return HandleConn(socket, std::shared_ptr<socket_type>(NULL));
+}
 void FrontendServer(){
 	ip::tcp::acceptor acceptor(context, ip::tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
        
@@ -245,24 +252,14 @@ void FrontendServer(){
 	    socket->set_option(ip::tcp::no_delay( true)); //Should probably be placed in a wrapper function for making new tcp sockets (so I don't forget about the no_delay)
 
 
-            std::thread(HandleConn, std::move(socket), std::shared_ptr<socket_type>(NULL)).detach();
+            std::thread(HandleConn1, std::move(socket)).detach();
         }
 }
 
-MessageType peekFromConn(socket_type& socket){
-	std::array<uint8_t,4> buf;
-	int bytes_read=0;
-
-	while(bytes_read < buf.max_size()){
-		bytes_read+=socket.receive(asio::buffer(buf), asio::socket_base::message_peek);
-	}
-
-	return static_cast<MessageType>(deserializeInt(buf.data(),0));
-}
 void HandleBackend(socket_ptr socket){
 	auto msg_type = peekFromConn(*socket);
 	if (msg_type == ESTABLISH){
-		std::thread(HandleConn, std::move(socket), std::shared_ptr<socket_type>(NULL)).detach();
+		std::thread(HandleConn1, std::move(socket)).detach();
 	}else{
 		std::array<uint8_t, 12> message_buf;
 		int id;
@@ -272,10 +269,26 @@ void HandleBackend(socket_ptr socket){
 			return; //socket no longer exists, so we have to exit now
 		}
 
-		std::unique_lock<std::shared_mutex> lk(b2i_mutex);
-		if (backend_to_info.contains(id)){
-			socket->close();
-			return;
+		{
+			std::shared_lock<std::shared_mutex> lk(b2i_mutex);
+
+			if (backend_to_info.contains(id)){
+				auto& info = backend_to_info[id];
+				bool still_alive = true; //Check if existing backend connection is dead.
+				try {
+					std::unique_lock lk(info.mu);
+					writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
+					readFromConn(*info.conn, message_buf);
+				}
+				catch(asio::system_error&){
+					still_alive = false;
+				}
+
+				if(still_alive){
+					socket->close();
+					return;
+				}
+			}
 		}
 		backend_to_info[id].conn=std::move(socket);
 
@@ -287,7 +300,11 @@ void BackendServer(){
 	for (;;){
 		auto socket=std::make_shared<socket_type>(context, UNIX);
 	    	acceptor.accept(*socket);
-	    	std::thread(HandleBackend, std::move(socket)).detach();
+		if(is_guest){
+			std::thread(HandleConn1, std::move(socket)).detach();
+		}else{
+	    		std::thread(HandleBackend, std::move(socket)).detach();
+		}
 	}
 
 }
@@ -295,14 +312,19 @@ void BackendServer(){
 int main(int argc, char** argv){	
 	std::string H2G_DEFAULT_FILE = "";
 	std::string G2H_DEFAULT_FILE = "";
+	bool IS_GUEST_DEFAULT = false;
 	#ifdef __APPLE__
 		H2G_DEFAULT_FILE="/dev/rdisk4";
 		G2H_DEFAULT_FILE="/dev/rdisk5";
+		IS_GUEST_DEFAULT = false;
 	#elif defined(__linux__)
-		H2G_DEFAULT_FILE = "/dev/disk/by-id/conn-h2g";
-		G2H_DEFAULT_FILE = "/dev/disk/by-id/conn-g2h";
+		H2G_DEFAULT_FILE = "/dev/disk/by-id/virtio-conn-h2g";
+		G2H_DEFAULT_FILE = "/dev/disk/by-id/virtio-conn-g2h";
+		IS_GUEST_DEFAULT = true;
 	#endif
-
+	
+	is_guest = getEnv("CONN_SERVER_IS_GUEST", IS_GUEST_DEFAULT);
+	
 	H2G.file=getEnv("CONN_SERVER_H2G_FILE", H2G_DEFAULT_FILE);
 	G2H.file=getEnv("CONN_SERVER_G2H_FILE", G2H_DEFAULT_FILE);
 
@@ -315,7 +337,7 @@ int main(int argc, char** argv){
 		while(info->fd == -1){
 			info->fd = open(info->file.c_str(), flags);
 			int error = errno;
-			if (error > 0){
+			if (info->fd == -1){
 				fprintf(stderr, "Error opening the disk %s due to error: %s\n", info->file.c_str(), strerror(error));
 			}
 		}
@@ -350,7 +372,10 @@ int main(int argc, char** argv){
 	}
 	
 	std::thread(BackendServer).detach();
-	std::thread(FrontendServer).detach();
+
+	if(!is_guest){
+		std::thread(FrontendServer).detach();
+	}
 	
 	std::promise<void>().get_future().wait();
 }

@@ -32,6 +32,7 @@ void serializeInt(uint8_t* buf, int i, uint32_t val);
 
 std::tuple <MessageType, uint32_t, uint32_t> readFromConn(socket_type& socket, std::array<uint8_t, 12> buf);
 void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType msg_type, uint32_t arg1, uint32_t arg2);
+MessageType peekFromConn(socket_type& socket);
 
 
 std::string getEnv(std::string _key, std::string _default);

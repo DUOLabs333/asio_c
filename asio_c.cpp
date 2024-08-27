@@ -7,6 +7,7 @@
 #include <lz4.h>
 #include <mutex>
 #include <array>
+#include <tuple>
 
 typedef std::unique_ptr<socket_type> socket_ptr;
 
@@ -121,6 +122,7 @@ AsioConn* asio_server_init(int id){ //For backends
 	if(backend.use_tcp){
 		server->acceptor=ip::tcp::acceptor(context,ip::tcp::endpoint(asio::ip::make_address(backend.address), backend.port));
 	}else{
+		server->socket=std::make_unique<socket_type>(context, UNIX);
 		connect_to_server(*server->socket);
 		writeToConn(*server->socket, server->msg_buf, INIT, id, 0); 
 		readFromConn(*server->socket, server->msg_buf); 
@@ -140,6 +142,17 @@ AsioConn* asio_server_accept(AsioConn* server){ //For backends
 		server->acceptor->accept(*conn->socket);
 		conn->socket->set_option( asio::ip::tcp::no_delay(true) );
 	}else{
+		auto msg_type = CONFIRM;
+
+		while(true){
+		   msg_type=peekFromConn(*server->socket);
+		   if(msg_type==CONFIRM){ //Acts as a ping
+			readFromConn(*server->socket, server->msg_buf);
+			writeToConn(*server->socket, server->msg_buf, CONFIRM, 0, 0);
+		   }else{
+			break;
+		   }
+		}
 		readFromConn(*server->socket, server->msg_buf); //Recieve ESTABLISH request from server
 		connect_to_server(*conn->socket);
 		writeToConn(*conn->socket, conn->msg_buf, ESTABLISH, server->id, 0);		
