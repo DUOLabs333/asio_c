@@ -1,5 +1,8 @@
 #include "utils.hpp"
 #include <asio/error_code.hpp>
+#include <asio/local/connect_pair.hpp>
+#include <asio/local/stream_protocol.hpp>
+#include <asio/system_error.hpp>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -18,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 
+typedef asio::local::stream_protocol::socket local_socket;
 #ifdef __APPLE__
 	#include <sys/disk.h>
 #endif
@@ -62,7 +66,7 @@ std::mutex b2u_mutex;
 
 asio::io_context context;
 
-auto SocketClose(socket_ptr socket){
+auto SocketClose(socket_ptr& socket){
 	if (!socket){
 		return;
 	}
@@ -112,7 +116,9 @@ void releaseSegment(DriveInfo& info, int& segment){
 	segment=-1;
 }
 
-void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NULL)){ //Sending messages from -> to
+void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe);
+
+void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending messages from -> to
 	std::array<uint8_t, 12> message_buf;
 	auto read = std::ref(G2H);
 	auto write = std::ref(H2G);
@@ -146,7 +152,7 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 
 					readFromConn(*to, message_buf); //Wait for confirmation
 					writeToConn(*from, message_buf, CONFIRM, 0, 0); //Send confirmation back
-					std::thread(HandleConn, to, from).detach();
+					CreateOppositeThread(from, to, pipe);
 					break;		
 				}
 				case (CONNECT_REMOTE): //Host received notification that a guest is trying to connect. Therefore, this will only run on the host
@@ -165,7 +171,7 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 					return;
 					break;	
 					}
-				case (ESTABLISH): //Server tells backend to make a new connection. This serves to simulate connecting directly to a port.
+				case (ESTABLISH): //Server tells backend to make a new connection. This serves to simulate connecting directly to a port. <unix> -> <tcp>
 					{
 						b2u_mutex.lock();
 						to = std::move(backend_to_unconnected_clients[arg1].front()); //This is safe, as the only reason why an ESTABLISH would be sent is if there's a new connection in the first place
@@ -175,11 +181,11 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 						writeToConn(*from, message_buf, CONFIRM, 0, 0);
 						writeToConn(*to, message_buf, CONFIRM, 0, 0);
 
-						std::thread(HandleConn, to, from).detach();
+						CreateOppositeThread(from, to, pipe);
 						break;
 					}
 				
-				case (WRITE_LOCAL): //When one side initiates a write 
+				case (WRITE_LOCAL): //When one side initiates a write. <unix> -> <tcp>
 					{
 
 					writeToConn(*to, message_buf, WRITE_REMOTE, arg1, arg2);
@@ -194,7 +200,7 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 						asio::read(*from, asio::buffer(buf.data(), size));
 						pwrite(write.get().fd, buf.data(), size, segment.offset);
 						#ifdef __linux__
-							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
+							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
 						#elif defined(__APPLE__)
 							//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
 							fcntl(write.get().fd, F_FULLFSYNC);
@@ -203,7 +209,8 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 						#endif
 
 						writeToConn(*to, message_buf, SEGMENT_READ, segment.offset, size);
-						readFromConn(*to, message_buf);
+
+						asio::read(pipe, asio::buffer(message_buf, 1)); //Wait for the signal that the confirm has been set without reading the <to> socket directly (as this could lead to a race condition).
 						len-=size;
 
 					}
@@ -213,12 +220,12 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 					break;
 
 					}
-				case (WRITE_REMOTE): 
+				case (WRITE_REMOTE): //<tcp> -> <unix>
 					{
 					writeToConn(*to, message_buf, WRITE_LOCAL, arg1, arg2);
 					break;
 					}
-				case (SEGMENT_READ):
+				case (SEGMENT_READ): //<tcp> -> <unix>
 					{
 					auto offset = arg1;
 					auto size = arg2;
@@ -226,11 +233,17 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 					pread(read.get().fd, buf.data(), size, offset);
 					asio::write(*to, asio::buffer(buf.data(), size));
 					writeToConn(*from, message_buf, CONFIRM, 0, 0);
+					break;
+					}
+				case (CONFIRM):
+					{
+					asio::write(pipe, asio::buffer("1", 1)); //Indicate to the other side that a confirm message has been sent, without having to read directly from from
+					break;
 					}
 				default:
 					{
 						printf("This is not supposed to happen!\n");
-						continue;
+						break;
 					}
 
 			}
@@ -243,15 +256,25 @@ void HandleConn(socket_ptr from, socket_ptr to = std::shared_ptr<socket_type>(NU
 		SocketClose(from);
 		SocketClose(to);
 
+		asio::error_code ec;
+		pipe.close(ec);
 
 	}
 
 
 }
 
+void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe){ //This creates a thread that works <to> <-> <from>, and also has a to_pipe. The pipes are set up such that <from_pipe> <-> <to_pipe>
+
+	auto to_pipe = asio::local::stream_protocol::socket(context);
+
+	asio::local::connect_pair(from_pipe, to_pipe);
+
+	std::thread(HandleConn, to_sock, from_sock, std::move(to_pipe)).detach();
+}
 
 auto HandleConn1(socket_ptr socket){
-	return HandleConn(socket, std::shared_ptr<socket_type>(NULL));
+	return HandleConn(socket, std::shared_ptr<socket_type>(NULL), asio::local::stream_protocol::socket(context));
 }
 void FrontendServer(){
 	ip::tcp::acceptor acceptor(context, ip::tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
