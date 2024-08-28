@@ -319,10 +319,10 @@ void HandleBackend(socket_ptr socket){
 		b2i_mutex.lock();
 		auto& info=backend_to_info[id];
 		b2i_mutex.unlock();
-
+		
+		std::unique_lock lk(info.mu); //We do a unique_lock because we have to write to the connection (which technically modifies it), and may have to modify the connection directly, along with .exists
 		if (info.exists){
 			try{
-				std::unique_lock lk(info.mu);
 				writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
 				readFromConn(*info.conn, message_buf);
 			}catch(asio::system_error&){
@@ -338,9 +338,7 @@ void HandleBackend(socket_ptr socket){
 		}else{
 			info.conn=std::move(socket);
 			
-			info.mu.lock();
 			writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
-			info.mu.unlock();
 			
 			info.exists = true;
 			info.cv.notify_all(); //Tell all threads that are waiting that this specific backend is available
