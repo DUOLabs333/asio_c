@@ -54,15 +54,15 @@ DriveInfo H2G, G2H; //Fill in path information in main()
 typedef struct {
 	 socket_ptr conn = NULL;
 	std::mutex mu;
+	std::condition_variable cv; //Allows the server to wait for a backend
+	std::queue<socket_ptr> unconnected_clients;
+	std::mutex uc_mutex;
+	bool exists = false;
 } BackendInfo;
 
+//TODO: Create function that returns the BackendInfo& for a given id (should do the locking automatically for the caller)
 std::unordered_map<int, BackendInfo> backend_to_info;
 std::shared_mutex b2i_mutex;
-
-std::unordered_map<int, std::queue<socket_ptr>> backend_to_unconnected_clients;
-std::unordered_map<int, std::condition_variable_any> backend_to_cv; //Allows the server to wait for a backend
-
-std::mutex b2u_mutex;
 
 asio::io_context context;
 
@@ -72,25 +72,27 @@ auto SocketClose(socket_ptr& socket){
 	}
 	
 	asio::error_code ec;
-	//Maybe also do a graceful shutdown?
+	//TODO: Maybe also do a graceful shutdown with ->shutdown()?
 	socket->close(ec);
 }
 
 
 void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, uint8_t arg1, uint8_t arg2){
-	b2i_mutex.lock_shared();
-	auto& info=backend_to_info[key];
-	b2i_mutex.unlock_shared();
+	b2i_mutex.lock();
+	auto& info=backend_to_info[key]; //This could be creating the dictionary, not merely accessing it
+	b2i_mutex.unlock();
+
+	std::unique_lock lk(info.mu); //From this point forward, only one thread can run this at a time
+
+	info.cv.wait(lk, [&]{return info.exists;}); //Wait for backend to exist
+
 
 	try{
-		std::unique_lock lk(info.mu);
 		writeToConn(*info.conn, buf, msg_type, arg1, arg2);
 	}
 	catch (asio::system_error& e){
-		std::unique_lock lk(b2i_mutex);
 		SocketClose(info.conn);
-		backend_to_info.erase(key);
-
+		info.exists = false;
 	}
 }
 
@@ -158,13 +160,16 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 				case (CONNECT_REMOTE): //Host received notification that a guest is trying to connect. Therefore, this will only run on the host
 					{
 					auto id = arg1;
-					b2u_mutex.lock();
 
-					backend_to_unconnected_clients[id].push(std::move(from));
-					b2u_mutex.unlock();
+					b2i_mutex.lock();
+					auto& info = backend_to_info[id];
+					b2i_mutex.unlock();
 
-					std::shared_lock lk(b2i_mutex);
-					backend_to_cv[id].wait(lk, [&]{return backend_to_info.contains(id);}); //Wait for backend to exist
+
+					info.uc_mutex.lock();
+					info.unconnected_clients.push(std::move(from));
+					info.uc_mutex.unlock();
+
 					writeToBackend(id, message_buf, ESTABLISH, 0, 0); //Tell backend to create a new connection
 
 					//We don't have to do anything else, since the backend will pick it up from here
@@ -173,10 +178,16 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					}
 				case (ESTABLISH): //Server tells backend to make a new connection. This serves to simulate connecting directly to a port. <unix> -> <tcp>
 					{
-						b2u_mutex.lock();
-						to = std::move(backend_to_unconnected_clients[arg1].front()); //This is safe, as the only reason why an ESTABLISH would be sent is if there's a new connection in the first place
-						backend_to_unconnected_clients[arg1].pop();
-						b2u_mutex.unlock();
+						auto id = arg1;
+
+						b2i_mutex.lock();
+						auto& info = backend_to_info[id];
+						b2i_mutex.unlock();
+
+						info.uc_mutex.lock();
+						to = std::move(info.unconnected_clients.front()); //This is safe, as the only reason why an ESTABLISH would be sent is if there's a new connection in the first place
+						info.unconnected_clients.pop();
+						info.uc_mutex.unlock();
 						
 						writeToConn(*from, message_buf, CONFIRM, 0, 0);
 						writeToConn(*to, message_buf, CONFIRM, 0, 0);
@@ -304,31 +315,36 @@ void HandleBackend(socket_ptr socket){
 			return; //socket no longer exists, so we have to exit now
 		}
 
-		{
-			std::shared_lock<std::shared_mutex> lk(b2i_mutex);
+			
+		b2i_mutex.lock();
+		auto& info=backend_to_info[id];
+		b2i_mutex.unlock();
 
-			if (backend_to_info.contains(id)){
-				auto& info = backend_to_info[id];
-				bool still_alive = true; //Check if existing backend connection is dead.
-				try {
-					std::unique_lock lk(info.mu);
-					writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
-					readFromConn(*info.conn, message_buf);
-				}
-				catch(asio::system_error&){
-					still_alive = false;
-				}
-
-				if(still_alive){
-					SocketClose(socket);
-					return;
-				}
+		if (info.exists){
+			try{
+				std::unique_lock lk(info.mu);
+				writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
+				readFromConn(*info.conn, message_buf);
+			}catch(asio::system_error&){
+				SocketClose(info.conn);
+				info.exists = false;
 			}
+			
+			if (info.exists){ //Still alive
+				SocketClose(socket);
+				return;
+			}
+
+		}else{
+			info.conn=std::move(socket);
+			
+			info.mu.lock();
+			writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
+			info.mu.unlock();
+			
+			info.exists = true;
+			info.cv.notify_all(); //Tell all threads that are waiting that this specific backend is available
 		}
-		std::unique_lock lk(b2i_mutex); //We're going to modify the map(ping)
-		backend_to_info[id].conn=std::move(socket);
-		backend_to_cv[id].notify_all(); //Tell all threads that are waiting that this specific backend is available
-		writeToConn(*backend_to_info[id].conn, message_buf, CONFIRM, 0, 0);
 
 	}
 }
