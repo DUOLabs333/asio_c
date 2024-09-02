@@ -76,7 +76,6 @@ auto SocketClose(socket_ptr& socket){
 	socket->close(ec);
 }
 
-
 void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, uint8_t arg1, uint8_t arg2){
 	b2i_mutex.lock();
 	auto& info=backend_to_info[key]; //This could be creating the dictionary, not merely accessing it
@@ -84,15 +83,20 @@ void writeToBackend(int key, std::array<uint8_t, 12> buf, MessageType msg_type, 
 
 	std::unique_lock lk(info.mu); //From this point forward, only one thread can run this at a time
 
-	info.cv.wait(lk, [&]{return info.exists;}); //Wait for backend to exist
+	while(true){
+		info.cv.wait(lk, [&]{return info.exists;}); //Wait for backend to exist
 
+		try{
+			writeToConn(*info.conn, buf, msg_type, arg1, arg2);
+		}
+		catch (asio::system_error& e){
+			SocketClose(info.conn);
+			info.exists = false;
+		}
 
-	try{
-		writeToConn(*info.conn, buf, msg_type, arg1, arg2);
-	}
-	catch (asio::system_error& e){
-		SocketClose(info.conn);
-		info.exists = false;
+		if (info.exists){ //Backend exists and message was sent
+			break;
+		}
 	}
 }
 
@@ -321,6 +325,8 @@ void HandleBackend(socket_ptr socket){
 		b2i_mutex.unlock();
 		
 		std::unique_lock lk(info.mu); //We do a unique_lock because we have to write to the connection (which technically modifies it), and may have to modify the connection directly, along with .exists
+
+
 		if (info.exists){
 			try{
 				writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
