@@ -121,7 +121,7 @@ void releaseSegment(DriveInfo& info, int& segment){
 
 	segment=-1;
 }
-
+//You can't use ramdisks on macOS because mmap and pread/pwrite will fail --- since they depend on the size being non-zero. However, on macOS all disks has zero size (this is not true on Linux) --- so any offset argument has to be <= 0, which is a problem. You will take a performance hit (and may wear out the drive faster). Will try ivshmem to see if it minimizes memory copies (will need to patch QEMU, and will use mmap with msync --- can just memcpy)
 void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe);
 
 void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending messages from -> to
@@ -212,10 +212,11 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 						auto size=std::min(segment.size, len);
 						buf.reserve(size);
 						asio::read(*from, asio::buffer(buf.data(), size));
-						printf("%d\n", buf.data()[0]);
+
 						pwrite(write.get().fd, buf.data(), size, segment.offset);
 						#ifdef __linux__
-							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
+							//sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
+							fsync(write.get().fd);
 						#elif defined(__APPLE__)
 							//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
 							fcntl(write.get().fd, F_FULLFSYNC);
