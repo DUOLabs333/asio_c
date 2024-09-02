@@ -139,8 +139,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 	try {
 		for (;;){
 			auto [ msg_type, arg1, arg2 ] = readFromConn(*from, message_buf);
-			printf("Hi!\n");
-			printf("%i\n", msg_type);
+			printf("Message type: %i\n", msg_type);
 			switch (msg_type){
 
 				case (CONNECT_LOCAL): //Guest wants to connect to host. Therefore, this will only ever be run by the guest.
@@ -213,6 +212,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 						auto size=std::min(segment.size, len);
 						buf.reserve(size);
 						asio::read(*from, asio::buffer(buf.data(), size));
+						printf("%d\n", buf.data()[0]);
 						pwrite(write.get().fd, buf.data(), size, segment.offset);
 						#ifdef __linux__
 							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
@@ -340,8 +340,8 @@ void HandleBackend(socket_ptr socket){
 				SocketClose(socket);
 				return;
 			}
-
-		}else{
+		}
+		if(!info.exists){
 			info.conn=std::move(socket);
 			
 			writeToConn(*info.conn, message_buf, CONFIRM, 0, 0);
