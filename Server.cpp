@@ -236,7 +236,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					}
 
 					releaseSegment(write.get(), segment_id);
-					writeToConn(*from, message_buf, CONFIRM, 0,0);
+					//writeToConn(*from, message_buf, CONFIRM, 0,0);
 					break;
 
 					}

@@ -268,7 +268,7 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 			writeToConn(*conn->socket, conn->msg_buf, WRITE_LOCAL, len, 0);
 			asio::write(*conn->socket, asio::buffer(buf, len));
 
-			readFromConn(*conn->socket, conn->msg_buf);
+			//readFromConn(*conn->socket, conn->msg_buf);
 		}
 	}
 	catch(asio::system_error& e){

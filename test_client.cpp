@@ -19,6 +19,7 @@ int main(int argc, char** argv){
 		memset(test_buf, i, 1024);
 		int dummy;
 		asio_read(client, &actual_buf, &dummy, &err);
+		printf("Actual length: %i\n", dummy);
 		if(memcmp(test_buf, actual_buf, 1024)){
 			printf("Buffers don't match!");
 			exit(1);
