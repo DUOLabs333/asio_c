@@ -8,6 +8,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <memory>
@@ -121,7 +122,11 @@ void releaseSegment(DriveInfo& info, int& segment){
 
 	segment=-1;
 }
-//You can't use ramdisks on macOS because mmap and pread/pwrite will fail --- since they depend on the size being non-zero. However, on macOS all disks has zero size (this is not true on Linux) --- so any offset argument has to be <= 0, which is a problem. You will take a performance hit (and may wear out the drive faster). Will try ivshmem to see if it minimizes memory copies (will need to patch QEMU, and will use mmap with msync --- can just memcpy)
+/*
+You can't use ramdisks on macOS because mmap and pread/pwrite will fail --- since they depend on the size being non-zero. However, on macOS all disks has zero size (this is not true on Linux) --- so any offset argument has to be <= 0, which is a problem. You will take a performance hit (and may wear out the drive faster). Will try ivshmem to see if it minimizes memory copies (will need to patch QEMU, and will use mmap with msync --- can just memcpy)
+
+default tcp (even with macOS vmnet.framework specifically designed for VMs) is too slow. vhost-user, but want to minimize out-of-tree patches to QEMU (there is a patchset, but progress on it is moving very slowly), and more importantly, I have no idea how to use it (I asked a question in the mailing list and IRC, and have not recieved to either yet, at the time of writing this). Only supports Linux guests (macOS can not work with drives, and even ivshmem wouldn't work either)
+*/
 void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe);
 
 void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending messages from -> to
@@ -215,8 +220,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 
 						pwrite(write.get().fd, buf.data(), size, segment.offset);
 						#ifdef __linux__
-							//sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
-							fsync(write.get().fd);
+							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
 						#elif defined(__APPLE__)
 							//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
 							fcntl(write.get().fd, F_FULLFSYNC);
@@ -354,8 +358,18 @@ void HandleBackend(socket_ptr socket){
 	}
 }
 void BackendServer(){
-	unlink(SERVER_SOCKET.c_str());
-	local::stream_protocol::acceptor acceptor(context, local::stream_protocol::endpoint(SERVER_SOCKET));
+	local::stream_protocol::endpoint socket_endpoint(SERVER_SOCKET);
+	{
+	local::stream_protocol::socket socket(context);
+	asio::error_code ec;
+	socket.connect(socket_endpoint, ec);
+	if (!ec){ //If you can connect to it
+		throw std::runtime_error(std::format("There's a server already running on the socket {}", SERVER_SOCKET));
+	}else{
+		unlink(SERVER_SOCKET.c_str());
+	}
+	}
+	local::stream_protocol::acceptor acceptor(context, socket_endpoint);
 	for (;;){
 		auto socket=std::make_shared<socket_type>(context, UNIX);
 	    	acceptor.accept(*socket);
@@ -373,8 +387,8 @@ int main(int argc, char** argv){
 	std::string G2H_DEFAULT_FILE = "";
 	bool IS_GUEST_DEFAULT = false;
 	#ifdef __APPLE__
-		H2G_DEFAULT_FILE="/dev/rdisk4";
-		G2H_DEFAULT_FILE="/dev/rdisk5";
+		H2G_DEFAULT_FILE="/Volumes/disk4/h2g";
+		G2H_DEFAULT_FILE="/Volumes/disk4/g2h";
 		IS_GUEST_DEFAULT = false;
 	#elif defined(__linux__)
 		H2G_DEFAULT_FILE = "/dev/disk/by-id/virtio-conn-h2g";
@@ -402,20 +416,6 @@ int main(int argc, char** argv){
 		}
 		
 		auto size=lseek(info->fd, 0, SEEK_END);
-		#ifdef __APPLE__ //Because lseek doesn't work on block devices on MacOS
-			uint32_t bcount;
-			auto ret1=ioctl(info->fd, DKIOCGETBLOCKCOUNT, &bcount);
-
-			uint32_t bsize;
-			auto ret2= ioctl(info->fd, DKIOCGETBLOCKSIZE, &bsize);
-
-			if ((ret1 < 0) || (ret2 < 0)){
-				fprintf(stderr, "Error getting size of disk %s", info->file.c_str());
-				exit(2);
-			}
-
-			size=bcount*bsize;
-		#endif
 		lseek(info->fd, 0, SEEK_SET);
 
 		info->segment_to_info.reserve(NUM_SEGMENTS);
