@@ -364,7 +364,7 @@ void BackendServer(){
 	asio::error_code ec;
 	socket.connect(socket_endpoint, ec);
 	if (!ec){ //If you can connect to it
-		throw std::runtime_error(std::format("There's a server already running on the socket {}", SERVER_SOCKET));
+		throw std::runtime_error(std::format("There's a server already running on the socket {}!", SERVER_SOCKET));
 	}else{
 		unlink(SERVER_SOCKET.c_str());
 	}

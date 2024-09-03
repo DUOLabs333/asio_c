@@ -21,5 +21,13 @@ int main(int argc, char** argv){
 		}
 	}
 
+	for(int i=0; i < 256; i++){
+		memset(test_buf, i, 1024);
+		asio_write(client, (char*)test_buf, 1024, &err);
+	}
+
+
+	
+
 
 }
