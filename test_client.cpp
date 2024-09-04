@@ -21,8 +21,9 @@ int main(int argc, char** argv){
 		asio_read(client, &actual_buf, &dummy, &err);
 		printf("Actual length: %i\n", dummy);
 		for (int j =0; j < dummy; j++){
-			printf("%i \n", actual_buf[j]);
+			printf("%u ", (uint8_t)actual_buf[j]);
 		}
+		printf("\n");
 		if(memcmp(test_buf, actual_buf, 1024)){
 			printf("Buffers don't match!\n");
 			printf("Offending: %i\n", i);

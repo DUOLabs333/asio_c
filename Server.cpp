@@ -130,6 +130,7 @@ default tcp (even with macOS vmnet.framework specifically designed for VMs) is t
 void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe);
 
 void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending messages from -> to
+//After setup, writing to <unix> should only be of the form <WRITE_LOCAL><data...>
 	std::array<uint8_t, 12> message_buf;
 	auto read = std::ref(G2H);
 	auto write = std::ref(H2G);
@@ -144,7 +145,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 	try {
 		for (;;){
 			auto [ msg_type, arg1, arg2 ] = readFromConn(*from, message_buf);
-			printf("Message type: %i\n", msg_type);
+			//printf("Message type: %i\n", msg_type);
 			switch (msg_type){
 
 				case (CONNECT_LOCAL): //Guest wants to connect to host. Therefore, this will only ever be run by the guest.
@@ -250,6 +251,14 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					auto offset = arg1;
 					auto size = arg2;
 					buf.reserve(size);
+					#ifdef __linux__
+						//posix_fadvise(read.get().fd, offset, size, POSIX_FADV_DONTNEED);
+						//system("echo 3 | sudo tee /proc/sys/vm/drop_caches");
+						auto cmd=std::format("dd of={} oflag=nocache conv=notrunc,fdatasync count=0 > /dev/null", read.get().file);
+
+						system(cmd.c_str());
+					#endif
+
 					pread(read.get().fd, buf.data(), size, offset);
 					asio::write(*to, asio::buffer(buf.data(), size));
 					writeToConn(*from, message_buf, CONFIRM, 0, 0);
