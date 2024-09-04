@@ -254,7 +254,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					#ifdef __linux__
 						//posix_fadvise(read.get().fd, offset, size, POSIX_FADV_DONTNEED);
 						//system("echo 3 | sudo tee /proc/sys/vm/drop_caches");
-						auto cmd=std::format("dd of={} oflag=nocache conv=notrunc,fdatasync count=0 > /dev/null", read.get().file);
+						auto cmd=std::format("dd of={} oflag=nocache conv=notrunc,fdatasync count=0 &> /dev/null", read.get().file);
 
 						system(cmd.c_str());
 					#endif
