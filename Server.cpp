@@ -31,7 +31,7 @@ std::string ADDRESS=getEnv("CONN_SERVER_ADDRESS", "192.168.64.1");
 int PORT=getEnv("CONN_SERVER_PORT", 4000);
 bool is_guest; 
 
-int NUM_SEGMENTS=100;
+int NUM_SEGMENTS=10;
 
 typedef std::shared_ptr<socket_type> socket_ptr;
 
@@ -48,6 +48,8 @@ typedef struct {
 	bool is_write; //Whether we will be writing to it (otherwise, we will be reading from it)
 	std::vector<SegmentInfo> segment_to_info; //You pop off structures, then add them back (using std::move for pop and emplace)
 	std::queue<int> available_segments;
+
+	int size = 0;
 } DriveInfo;
 
 DriveInfo H2G, G2H; //Fill in path information in main()
@@ -154,6 +156,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					asio::error_code ec;
 					while(true){
 						to->connect(ip::tcp::endpoint(ip::make_address(ADDRESS), PORT), ec);
+						to->set_option(ip::tcp::no_delay( true));
 						if (!ec){
 							break;
 						}
@@ -252,11 +255,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					auto size = arg2;
 					buf.reserve(size);
 					#ifdef __linux__
-						//posix_fadvise(read.get().fd, offset, size, POSIX_FADV_DONTNEED);
-						//system("echo 3 | sudo tee /proc/sys/vm/drop_caches");
-						auto cmd=std::format("dd of={} oflag=nocache conv=notrunc,fdatasync count=0 &> /dev/null", read.get().file);
-
-						system(cmd.c_str());
+						posix_fadvise(read.get().fd, 0, read.get().size, POSIX_FADV_DONTNEED);
 					#endif
 
 					pread(read.get().fd, buf.data(), size, offset);
@@ -425,6 +424,7 @@ int main(int argc, char** argv){
 		}
 		
 		auto size=lseek(info->fd, 0, SEEK_END);
+		info->size = size;
 		lseek(info->fd, 0, SEEK_SET);
 
 		info->segment_to_info.reserve(NUM_SEGMENTS);
