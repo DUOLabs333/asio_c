@@ -50,8 +50,6 @@ typedef struct {
 	std::queue<int> available_segments;
 
 	int size = 0;
-
-	uint8_t* mmap;
 } DriveInfo;
 
 DriveInfo H2G, G2H; //Fill in path information in main()
@@ -149,7 +147,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 	try {
 		for (;;){
 			auto [ msg_type, arg1, arg2 ] = readFromConn(*from, message_buf);
-			printf("Message type: %i\n", msg_type);
+			//printf("Message type: %i\n", msg_type);
 			switch (msg_type){
 
 				case (CONNECT_LOCAL): //Guest wants to connect to host. Therefore, this will only ever be run by the guest.
@@ -221,21 +219,17 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 
 					while (len>0){
 						auto size=std::min(segment.size, len);
-						#if 0
-							buf.reserve(size);
-							asio::read(*from, asio::buffer(buf.data(), size));
-							pwrite(write.get().fd, buf.data(), size, segment.offset);
-							#ifdef __linux__
-								sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
-							#elif defined(__APPLE__)
-								//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
-								fcntl(write.get().fd, F_FULLFSYNC);
-							#else
-								fsync(write.get().fd);
-							#endif
+						buf.reserve(size);
+						asio::read(*from, asio::buffer(buf.data(), size));
+
+						pwrite(write.get().fd, buf.data(), size, segment.offset);
+						#ifdef __linux__
+							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
+						#elif defined(__APPLE__)
+							//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
+							fcntl(write.get().fd, F_FULLFSYNC);
 						#else
-							asio::read(*from, asio::buffer(write.get().mmap+segment.offset, size));
-							msync(write.get().mmap, write.get().size, MS_SYNC);
+							fsync(write.get().fd);
 						#endif
 
 						writeToConn(*to, message_buf, SEGMENT_READ, segment.offset, size);
@@ -259,24 +253,13 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					{
 					auto offset = arg1;
 					auto size = arg2;
-
-					#if 0
-						buf.reserve(size);
-						#ifdef __linux__
-							posix_fadvise(read.get().fd, 0, read.get().size, POSIX_FADV_DONTNEED);
-						#endif
-
-						pread(read.get().fd, buf.data(), size, offset);
-						asio::write(*to, asio::buffer(buf.data(), size));
-					#else
-
-						#ifdef __linux__
-							int ret = madvise(read.get().mmap, read.get().size, MADV_DONTNEED);
-							posix_fadvise(read.get().fd, 0, read.get().size, POSIX_FADV_DONTNEED);
-							printf("Return value: %i\n", ret);
-						#endif
-						asio::write(*to, asio::buffer(read.get().mmap+offset, size));
+					buf.reserve(size);
+					#ifdef __linux__
+						posix_fadvise(read.get().fd, 0, read.get().size, POSIX_FADV_DONTNEED);
 					#endif
+
+					pread(read.get().fd, buf.data(), size, offset);
+					asio::write(*to, asio::buffer(buf.data(), size));
 					writeToConn(*from, message_buf, CONFIRM, 0, 0);
 					break;
 					}
@@ -431,10 +414,9 @@ int main(int argc, char** argv){
 
 	std::array<DriveInfo*, 2> drives = {&H2G, &G2H};
 	for(auto& info: drives){
-		auto fd_flags = (info->is_write ? O_RDWR: O_RDONLY);
-		auto mmap_flags = (info->is_write ? PROT_WRITE: PROT_READ);
+		auto flags = (info->is_write ? O_WRONLY: O_RDONLY);
 		while(info->fd == -1){
-			info->fd = open(info->file.c_str(), fd_flags);
+			info->fd = open(info->file.c_str(), flags);
 			int error = errno;
 			if (info->fd == -1){
 				fprintf(stderr, "Error opening the disk %s due to error: %s\n", info->file.c_str(), strerror(error));
@@ -444,10 +426,6 @@ int main(int argc, char** argv){
 		auto size=lseek(info->fd, 0, SEEK_END);
 		info->size = size;
 		lseek(info->fd, 0, SEEK_SET);
-
-		info->mmap = static_cast<uint8_t*>(mmap(NULL, size, mmap_flags, MAP_SHARED, info->fd, 0));
-		printf("Mmap: %p\n", info->mmap);
-		printf("Error: %s\n", strerror(errno));
 
 		info->segment_to_info.reserve(NUM_SEGMENTS);
 		
