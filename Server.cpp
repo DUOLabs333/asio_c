@@ -22,7 +22,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 
-typedef asio::local::stream_protocol::socket local_socket;
+typedef std::shared_ptr<std::atomic<bool>> lock_ptr;
 #ifdef __APPLE__
 	#include <sys/disk.h>
 #endif
@@ -50,6 +50,8 @@ typedef struct {
 	std::queue<int> available_segments;
 
 	int size = 0;
+
+	char* mmap = NULL;
 } DriveInfo;
 
 DriveInfo H2G, G2H; //Fill in path information in main()
@@ -129,9 +131,9 @@ You can't use ramdisks on macOS because mmap and pread/pwrite will fail --- sinc
 
 default tcp (even with macOS vmnet.framework specifically designed for VMs) is too slow. vhost-user, but want to minimize out-of-tree patches to QEMU (there is a patchset, but progress on it is moving very slowly), and more importantly, I have no idea how to use it (I asked a question in the mailing list and IRC, and have not recieved to either yet, at the time of writing this). Only supports Linux guests (macOS can not work with drives, and even ivshmem wouldn't work either)
 */
-void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe);
+void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, lock_ptr& from_lock);
 
-void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending messages from -> to
+void HandleConn(socket_ptr from, socket_ptr to, lock_ptr lock){ //Sending messages from -> to
 //After setup, writing to <unix> should only be of the form <WRITE_LOCAL><data...>
 	std::array<uint8_t, 12> message_buf;
 	auto read = std::ref(G2H);
@@ -166,7 +168,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 
 					readFromConn(*to, message_buf); //Wait for confirmation
 					writeToConn(*from, message_buf, CONFIRM, 0, 0); //Send confirmation back
-					CreateOppositeThread(from, to, pipe);
+					CreateOppositeThread(from, to, lock);
 					break;		
 				}
 				case (CONNECT_REMOTE): //Host received notification that a guest is trying to connect. Therefore, this will only run on the host
@@ -204,7 +206,7 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 						writeToConn(*from, message_buf, CONFIRM, 0, 0);
 						writeToConn(*to, message_buf, CONFIRM, 0, 0);
 
-						CreateOppositeThread(from, to, pipe);
+						CreateOppositeThread(from, to, lock);
 						break;
 					}
 				
@@ -212,19 +214,17 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					{
 
 					writeToConn(*to, message_buf, WRITE_REMOTE, arg1, arg2);
-
+					
 					auto len = arg1;
-
-					auto& segment = acquireSegment(write, segment_id);
+					auto& segment = acquireSegment(write.get(), segment_id);
 
 					while (len>0){
 						auto size=std::min(segment.size, len);
-						buf.reserve(size);
-						asio::read(*from, asio::buffer(buf.data(), size));
-
-						pwrite(write.get().fd, buf.data(), size, segment.offset);
+						//buf.reserve(size);
+						asio::read(*from, asio::buffer(write.get().mmap+segment.offset, size));
+						
 						#ifdef __linux__
-							sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
+							//sync_file_range(write.get().fd, segment.offset, size, SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
 						#elif defined(__APPLE__)
 							//fsync_range(write.get().fd,  FFILESYNC, segment.offset, size);
 							fcntl(write.get().fd, F_FULLFSYNC);
@@ -234,7 +234,9 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 
 						writeToConn(*to, message_buf, SEGMENT_READ, segment.offset, size);
 
-						asio::read(pipe, asio::buffer(message_buf, 1)); //Wait for the signal that the confirm has been set without reading the <to> socket directly (as this could lead to a race condition).
+						lock->wait(false);
+						*lock=false;
+						//asio::read(pipe, asio::buffer(message_buf, 1)); //Wait for the signal that the confirm has been set without reading the <to> socket directly (as this could lead to a race condition).
 						len-=size;
 
 					}
@@ -253,19 +255,21 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 					{
 					auto offset = arg1;
 					auto size = arg2;
-					buf.reserve(size);
+					//buf.reserve(size);
 					#ifdef __linux__
-						posix_fadvise(read.get().fd, 0, read.get().size, POSIX_FADV_DONTNEED);
+						//posix_fadvise(read.get().fd, 0, read.get().size, POSIX_FADV_DONTNEED);
 					#endif
 
-					pread(read.get().fd, buf.data(), size, offset);
-					asio::write(*to, asio::buffer(buf.data(), size));
+					//pread(read.get().fd, buf.data(), size, offset);
+					asio::write(*to, asio::buffer(read.get().mmap+offset, size));
 					writeToConn(*from, message_buf, CONFIRM, 0, 0);
 					break;
 					}
 				case (CONFIRM):
 					{
-					asio::write(pipe, asio::buffer("1", 1)); //Indicate to the other side that a confirm message has been sent, without having to read directly from from
+					*lock=true;
+					lock->notify_all();
+					//asio::write(pipe, asio::buffer("1", 1)); //Indicate to the other side that a confirm message has been sent, without having to read directly from from
 					break;
 					}
 				default:
@@ -284,25 +288,18 @@ void HandleConn(socket_ptr from, socket_ptr to, local_socket pipe){ //Sending me
 		SocketClose(from);
 		SocketClose(to);
 
-		asio::error_code ec;
-		pipe.close(ec);
 
 	}
 
 
 }
 
-void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, local_socket& from_pipe){ //This creates a thread that works <to> <-> <from>, and also has a to_pipe. The pipes are set up such that <from_pipe> <-> <to_pipe>
-
-	auto to_pipe = asio::local::stream_protocol::socket(context);
-
-	asio::local::connect_pair(from_pipe, to_pipe);
-
-	std::thread(HandleConn, to_sock, from_sock, std::move(to_pipe)).detach();
+void CreateOppositeThread(socket_ptr& from_sock, socket_ptr& to_sock, lock_ptr& from_lock){ //This creates a thread that works <to> <-> <from>, and also has a to_pipe. The pipes are set up such that <from_pipe> <-> <to_pipe>
+	std::thread(HandleConn, to_sock, from_sock, from_lock).detach();
 }
 
 auto HandleConn1(socket_ptr socket){
-	return HandleConn(socket, std::shared_ptr<socket_type>(NULL), asio::local::stream_protocol::socket(context));
+	return HandleConn(socket, std::shared_ptr<socket_type>(NULL), std::make_shared<std::atomic<bool>>(false));
 }
 void FrontendServer(){
 	ip::tcp::acceptor acceptor(context, ip::tcp::endpoint(asio::ip::make_address(ADDRESS), PORT));
@@ -399,8 +396,8 @@ int main(int argc, char** argv){
 		G2H_DEFAULT_FILE="/Volumes/disk4/g2h";
 		IS_GUEST_DEFAULT = false;
 	#elif defined(__linux__)
-		H2G_DEFAULT_FILE = "/dev/disk/by-id/virtio-conn-h2g";
-		G2H_DEFAULT_FILE = "/dev/disk/by-id/virtio-conn-g2h";
+		H2G_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:02.0/resource2_wc";
+		G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:03.0/resource2_wc";
 		IS_GUEST_DEFAULT = true;
 	#endif
 	
@@ -414,7 +411,8 @@ int main(int argc, char** argv){
 
 	std::array<DriveInfo*, 2> drives = {&H2G, &G2H};
 	for(auto& info: drives){
-		auto flags = (info->is_write ? O_WRONLY: O_RDONLY);
+		//auto flags = (info->is_write ? O_WRONLY: O_RDONLY);
+		auto flags = O_RDWR;
 		while(info->fd == -1){
 			info->fd = open(info->file.c_str(), flags);
 			int error = errno;
@@ -426,6 +424,8 @@ int main(int argc, char** argv){
 		auto size=lseek(info->fd, 0, SEEK_END);
 		info->size = size;
 		lseek(info->fd, 0, SEEK_SET);
+
+		info->mmap=static_cast<char*>(mmap(NULL, size, PROT_WRITE, MAP_SHARED, info->fd, 0));
 
 		info->segment_to_info.reserve(NUM_SEGMENTS);
 		
