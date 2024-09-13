@@ -22,7 +22,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 
-typedef std::shared_ptr<std::atomic<bool>> lock_ptr;
+typedef std::shared_ptr<std::atomic<int>> lock_ptr;
 #ifdef __APPLE__
 	#include <sys/disk.h>
 #endif
@@ -31,7 +31,7 @@ std::string ADDRESS=getEnv("CONN_SERVER_ADDRESS", "192.168.64.1");
 int PORT=getEnv("CONN_SERVER_PORT", 4000);
 bool is_guest; 
 
-int NUM_SEGMENTS=10;
+int NUM_SEGMENTS=100;
 
 typedef std::shared_ptr<socket_type> socket_ptr;
 
@@ -234,8 +234,11 @@ void HandleConn(socket_ptr from, socket_ptr to, lock_ptr lock){ //Sending messag
 
 						writeToConn(*to, message_buf, SEGMENT_READ, segment.offset, size);
 
-						lock->wait(false);
-						*lock=false;
+						lock->wait(0);
+						if(lock->load() == 2){
+							throw asio::system_error();
+						}
+						*lock=0;
 						//asio::read(pipe, asio::buffer(message_buf, 1)); //Wait for the signal that the confirm has been set without reading the <to> socket directly (as this could lead to a race condition).
 						len-=size;
 
@@ -267,7 +270,10 @@ void HandleConn(socket_ptr from, socket_ptr to, lock_ptr lock){ //Sending messag
 					}
 				case (CONFIRM):
 					{
-					*lock=true;
+					if(lock->load() == 2){
+						throw asio::system_error();
+					}
+					*lock=1;
 					lock->notify_all();
 					//asio::write(pipe, asio::buffer("1", 1)); //Indicate to the other side that a confirm message has been sent, without having to read directly from from
 					break;
@@ -287,7 +293,7 @@ void HandleConn(socket_ptr from, socket_ptr to, lock_ptr lock){ //Sending messag
 
 		SocketClose(from);
 		SocketClose(to);
-
+		*lock = 2; //Set *lock = 2 to indicate that the side has finished (this also means before waiting/checking, if *lock == 2, then the side throws an asio::system_error
 
 	}
 
