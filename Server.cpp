@@ -90,37 +90,60 @@ You can't use ramdisks on macOS because mmap and pread/pwrite will fail --- sinc
 default tcp (even with the macOS-specific vmnet.framework specifically designed for VMs) is too slow. There is vhost-user, but want to minimize out-of-tree patches to QEMU (there is a patchset, but progress on it is moving very slowly), and more importantly, I have no idea how to use it (I asked a question in the mailing list and IRC, and have not received on either platform yet, at the time of writing this). Only supports Linux guests (macOS can not work with drives, and even ivshmem wouldn't work either on macOS)
 */
 
+void flushDrive(std::reference_wrapper<DriveInfo>& info){
+}
+
+//0|1|2|3|4|5
+//T| |H|
 auto WaitForChange(uint8_t* mem, std::function<bool(uint8_t,uint8_t)> f){
 	for(;;){
 		auto head = mem[0];
 		auto tail = mem[1];
 		if(f(head,tail)){
-			uint8_t length;
-
-			if(head == tail){
-				length = 0;
-			}else if(head < tail){
-				length = (tail-head)+1;
-			}else if(head > tail){
-				length = NUM_SEGMENTS-(head-tail)+1;
-			}
-
-			return std::make_tuple(head, length);
+			return std::make_tuple(head, tail, f);
 		}
 
 		usleep(10);
 	}
 }
 
-void writeToRing(uint32_t thread, uint32_t msg_type, uint32_t arg1, socket_ptr conn = NULL, uint32_t size = 0){
+
+void writeToRing(uint32_t thread, MessageType msg_type, uint32_t arg1, socket_ptr conn = NULL, uint32_t length = 0){
 	std::unique_lock lk(ring_mutex);
 	
+	auto mem = Write.get().mmap;
+	auto& segments = Write.get().segment_to_info;
+
 	for(;;){
-		auto [ start, length ] = WaitForChange(Write.get().mmap, [](uint8_t a, uint8_t b){ return b!=(a-1);}); //Wait until the s
+		auto [ head, tail, f ] = WaitForChange(mem, [](uint8_t a, uint8_t b){ return b!=(a-1);}); //Wait until the tail (which points to the index after the last filled element) is one place before the head.
 
+		while(f(head,tail)){
+			auto offset = segments[tail-1].offset; //Has to be tail-1 since tail points to the index after the last actual element
+			auto size = segments[tail-1].size;
+
+			auto written_length = std::min(size - 12, length); //How much data to write
+			if(length > 0){ //There's data to write --- any call to write data should be separate from the rest of the message
+
+				msg_type = DATA;
+				arg1 = written_length;
+			}
+
+			packMessage(mem+offset, thread, msg_type, arg1);
+
+
+			asio::read(*conn, asio::buffer(mem+offset+12, written_length));
+
+			length -= written_length;
+			
+			mem[1]=(++tail);
+			flushDrive(Write);
+			
+			
+			if(size == 0){
+				return;
+			}
+		}
 	}
-
-	done:
 }
 void HandleConn(int key, ThreadInfo& info){ //Read from socket and write to ring
 //When quitting, remove from dictionary
@@ -150,7 +173,8 @@ void HandleConn(int key, ThreadInfo& info){ //Read from socket and write to ring
 				case(WRITE):
 				{
 					auto size = arg1;
-					writeToRing(info.thread, WRITE, size, info.conn, size);
+					writeToRing(info.thread, WRITE, size);
+					writeToRing(info.thread, DUMMY, 0, info.conn, size); //Write the data
 					break;
 				}
 
@@ -178,20 +202,19 @@ void HandleConn(int key, ThreadInfo& info){ //Read from socket and write to ring
 
 
 }
-//0|1|2|3|4|5
-//T| |H|
+
 void readFromRing(){
 	auto mem = Read.get().mmap;
 	//By the time the server accepts, and the client connects, the respective memory has been set to 0
 	auto& segments = Read.get().segment_to_info;
 
 	for(;;){
-		auto [start, length ] = WaitForChange(mem, [](uint8_t a, uint8_t b){ return a!=b;}); //Wait until ring buffer is not empty (as denoted by a==b)
-
-		for(int i =0; i< length; i++){
+		auto [head, tail, f ] = WaitForChange(mem, [](uint8_t a, uint8_t b){ return a!=b;}); //Wait until ring buffer is not empty (as denoted by a!=b)
+		
+		while(f(head, tail)){
 			
-			auto offset=segments[start].offset;
-			auto size = segments[start].size;
+			auto offset=segments[head].offset;
+			auto size = segments[head].size;
 
 			auto [thread, msg_type, arg1] = unpackMessage(mem+offset); //TODO: Should deserialize into three uint8_t
 	
@@ -222,9 +245,13 @@ void readFromRing(){
 
 					case(WRITE):
 						{
-						writeToConn(*info.conn, WRITE, arg1, 0); //TODO: Make sure that asio_c is updated accordingly.
-						asio::write(*info.conn, asio::buffer(mem+offset+12, size-12));
-
+						writeToConn(*info.conn, WRITE, arg1, 0);
+						break;
+						}
+					case(DATA):
+						{
+						auto size = arg1;
+						asio::write(*info.conn, asio::buffer(mem+offset+12, size));
 						break;
 						}
 					case(DISCONNECT):
@@ -237,10 +264,9 @@ void readFromRing(){
 						info.connected = true;
 						}
 				}
-				mem[0]++;
-				#ifdef __APPLE__
-					fcntl(Read.get().fd, F_FULLFSYNC);
-				#endif
+
+				mem[0]=(++head);
+				flushDrive(
 			}
 		}
 	}
@@ -343,10 +369,6 @@ int main(int argc, char** argv){
 	}
 	
 	memset(Write.get().mmap,0, 2);
-
-	if (is_guest){
-		std::thread(Server).detach();
-	}
 	
 	char buf[2] = "1";
 	ip::tcp::socket socket(context);
@@ -364,6 +386,10 @@ int main(int argc, char** argv){
 			break;
 		}
 
+	}
+
+	if (is_guest){
+		std::thread(Server).detach();
 	}
 		
 	std::thread(readFromRing).detach();

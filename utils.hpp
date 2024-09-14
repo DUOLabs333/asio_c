@@ -13,7 +13,9 @@ enum MessageType{
 	CONFIRM = 0, //Acts only as denoting when confirmation occurs
 	CONNECT,
 	WRITE,
-	DISCONNECT
+	DISCONNECT,
+	DATA, 
+	DUMMY
 };
 
 typedef asio::generic::stream_protocol::socket socket_type;
