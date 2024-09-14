@@ -10,14 +10,10 @@ namespace local = asio::local;
 
 
 enum MessageType{
-	INIT = 0, //Handled specially
-	CONFIRM, //Acts only as denoting when confirmation occurs
-	CONNECT_LOCAL,
-	CONNECT_REMOTE,
-	ESTABLISH,
-	WRITE_LOCAL,
-	WRITE_REMOTE,
-	SEGMENT_READ
+	CONFIRM = 0, //Acts only as denoting when confirmation occurs
+	CONNECT,
+	WRITE,
+	DISCONNECT
 };
 
 typedef asio::generic::stream_protocol::socket socket_type;

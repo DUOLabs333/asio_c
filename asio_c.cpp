@@ -102,7 +102,7 @@ AsioConn* asio_connect(int id){ //For clients
 	}else{
 		conn->socket=std::make_unique<socket_type>(context, UNIX);
 		connect_to_server(*conn->socket);
-		writeToConn(*conn->socket, conn->msg_buf, CONNECT_LOCAL, id, 0);
+		writeToConn(*conn->socket, conn->msg_buf, CONNECT, id, 0);
 		readFromConn(*conn->socket, conn->msg_buf);
 
 	}
@@ -119,17 +119,11 @@ AsioConn* asio_server_init(int id){ //For backends
 	
 	auto& backend = get_backend(id);
 	
-	if(backend.use_tcp){
+	if(true){
 		server->acceptor=ip::tcp::acceptor(context,ip::tcp::endpoint(asio::ip::make_address(backend.address), backend.port));
-	}else{
-		server->socket=std::make_unique<socket_type>(context, UNIX);
-		connect_to_server(*server->socket);
-		writeToConn(*server->socket, server->msg_buf, INIT, id, 0); 
-		readFromConn(*server->socket, server->msg_buf); 
 	}
-	
 	server->id=id;
-	server->use_tcp=backend.use_tcp;
+	server->use_tcp=true;
 
 	return server;
 }
@@ -137,30 +131,10 @@ AsioConn* asio_server_init(int id){ //For backends
 AsioConn* asio_server_accept(AsioConn* server){ //For backends
 	auto conn=new AsioConn();
 	
-	if(server->use_tcp){
-		conn->socket=std::make_unique<socket_type>(context, TCP);
-		server->acceptor->accept(*conn->socket);
-		conn->socket->set_option( asio::ip::tcp::no_delay(true) );
-	}else{
-		auto msg_type = CONFIRM;
-
-		while(true){
-		   msg_type=peekFromConn(*server->socket);
-		   if(msg_type==CONFIRM){ //Acts as a ping
-			readFromConn(*server->socket, server->msg_buf);
-			writeToConn(*server->socket, server->msg_buf, CONFIRM, 0, 0);
-		   }else{
-			break;
-		   }
-		}
-		readFromConn(*server->socket, server->msg_buf); //Recieve ESTABLISH request from server
-
-		conn->socket=std::make_unique<socket_type>(context, UNIX);
-		connect_to_server(*conn->socket);
-		writeToConn(*conn->socket, conn->msg_buf, ESTABLISH, server->id, 0);		
-		readFromConn(*conn->socket, conn->msg_buf);
-
-	}
+	conn->socket=std::make_unique<socket_type>(context, TCP);
+	server->acceptor->accept(*conn->socket);
+	conn->socket->set_option( asio::ip::tcp::no_delay(true) );
+	
 
 	conn->id=server->id;
 	conn->use_tcp=server->use_tcp;
@@ -265,7 +239,7 @@ void asio_write(AsioConn* conn, char* buf, int len, bool* err){
 
 			asio::write(*(conn->socket), std::vector<asio::const_buffer>{asio::buffer(&is_compressed, 1), asio::buffer(conn->size_buf), asio::buffer(input, size)});
 		}else{
-			writeToConn(*conn->socket, conn->msg_buf, WRITE_LOCAL, len, 0);
+			writeToConn(*conn->socket, conn->msg_buf, WRITE, len, 0);
 			asio::write(*conn->socket, asio::buffer(buf, len));
 
 			//readFromConn(*conn->socket, conn->msg_buf);
