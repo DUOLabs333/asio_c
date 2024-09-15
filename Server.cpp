@@ -70,19 +70,6 @@ auto SocketClose(socket_ptr& socket){
 
 std::atomic<uint32_t> thread_counter = 0;
 
-typedef struct ThreadInfo{
-	socket_ptr conn = NULL;
-	uint32_t thread;
-	std::atomic<bool> connected = false;
-
-	~ThreadInfo(){
-		writeToRing(thread, DISCONNECT, 0);
-		SocketClose(conn);
-		thread_counter--;
-	}
-} ThreadInfo;
-
-std::unordered_map<uint32_t, std::shared_ptr<ThreadInfo>> thread_to_info; //Map the client thread id to the corresponding thread. We use the client server thread number globally for both server and client (works as long as there is a 1-to-1 relationship between a client and server, and that upon disconnection on either side, we completely restart (ie, re-exec) the corresponding side).
 
 std::shared_mutex t2i_mutex;
 
@@ -98,7 +85,7 @@ default tcp (even with the macOS-specific vmnet.framework specifically designed 
 void flushDrive(DriveInfo& info){
 	if(!is_guest){ //Hosts do not have access to fsync-free PCI
 		#ifdef __APPLE__
-			fcntl(info.fd, F_FULLSYNC);
+			fcntl(info.fd, F_FULLFSYNC);
 		#endif
 
 	}
@@ -161,6 +148,21 @@ void writeToRing(uint32_t thread, MessageType msg_type, uint32_t arg1, socket_ty
 		}
 	}
 }
+
+typedef struct ThreadInfo{
+	socket_ptr conn = NULL;
+	uint32_t thread;
+	std::atomic<bool> connected = false;
+
+	~ThreadInfo(){
+		writeToRing(thread, DISCONNECT, 0);
+		SocketClose(conn);
+		thread_counter--;
+	}
+} ThreadInfo;
+
+std::unordered_map<uint32_t, std::shared_ptr<ThreadInfo>> thread_to_info; //Map the client thread id to the corresponding thread. We use the client server thread number globally for both server and client (works as long as there is a 1-to-1 relationship between a client and server, and that upon disconnection on either side, we completely restart (ie, re-exec) the corresponding side).
+
 void HandleConn(int key, std::shared_ptr<ThreadInfo> info){ //Read from socket and write to ring
 //When quitting, remove from dictionary
 	std::array<uint8_t, 12> message_buf;
@@ -211,6 +213,7 @@ void readFromRing(){
 	auto mem = Read.get().mmap;
 	//By the time the server accepts, and the client connects, the pertinent memory has been set to 0
 	auto& segments = Read.get().segment_to_info;
+	std::array<uint8_t, 12> message_buf;
 
 	for(;;){
 		auto [head, tail, f ] = WaitForChange(Read, [](uint8_t a, uint8_t b){ return a!=b;}); //Wait until ring buffer is not empty (as denoted by a!=b)
@@ -247,7 +250,7 @@ void readFromRing(){
 
 					case(WRITE):
 						{
-						writeToConn(*info->conn, WRITE, arg1, 0);
+						writeToConn(*info->conn, message_buf, WRITE, arg1, 0);
 						break;
 						}
 					case(DATA):
@@ -282,6 +285,8 @@ void HandleBackend(socket_ptr socket){
 
 	t2i_mutex.lock();
 	auto& info = thread_to_info[key];
+	info->thread = key;
+	info->conn = std::move(socket);
 	t2i_mutex.unlock();
 
 	std::thread(HandleConn, key, info).detach();
@@ -300,7 +305,7 @@ void Server(){ //Only for client
 	}
 	local::stream_protocol::acceptor acceptor(context, socket_endpoint);
 	for (;;){
-		auto socket=std::make_shared<socket_type>(context, UNIX);
+		auto socket=std::make_unique<socket_type>(context, UNIX);
 	    	acceptor.accept(*socket);
 
 	
@@ -319,6 +324,7 @@ int main(int argc, char** argv){
 		IS_GUEST_DEFAULT = false;
 	#elif defined(__linux__)
 		H2G_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:02.0/resource2_wc";
+		//G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:05.0/resource2_wc";
 		G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:03.0/resource2_wc";
 		IS_GUEST_DEFAULT = true;
 	#endif

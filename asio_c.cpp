@@ -41,7 +41,7 @@ void connect_to_server(socket_type& socket){
 AsioConn* asio_connect(int id){ //For clients
 	auto conn=new AsioConn();
 	
-	auto backend = get_backend(id, &(conn->backend));
+	auto backend = getBackend(id, &(conn->backend));
 
 	if (backend->use_tcp){
 		connectToBackend(backend, conn->socket, context);
@@ -61,7 +61,7 @@ conn->socket=std::make_unique<socket_type>(context, UNIX);
 AsioConn* asio_server_init(int id){ //For backends
 	auto server=new AsioConn();
 	
-	auto backend = get_backend(id, &(server->backend));
+	auto backend = getBackend(id, &(server->backend));
 	
 	server->acceptor=ip::tcp::acceptor(context,ip::tcp::endpoint(asio::ip::make_address(backend->address), backend->port));
 

@@ -66,7 +66,7 @@ int getEnv(std::string _key, int _default){
 
 BackendInfo backends[] = { {.prefix="STREAM", .port = 9000, .compression=true} , {.prefix="CLIP", .port= 9001}, {.prefix="AV", .port = 9002}};
 
-BackendInfo* getBackend(int id, BackendInfo** ret = NULL){
+BackendInfo* getBackend(int id, BackendInfo** ret){
 	auto backend =&backends[id];
 
 	backend->mu.lock();
