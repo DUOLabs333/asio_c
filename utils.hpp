@@ -19,6 +19,7 @@ enum MessageType{
 };
 
 typedef asio::generic::stream_protocol::socket socket_type;
+typedef std::unique_ptr<socket_type> socket_ptr;
 
 #define TCP ip::tcp::v4().protocol()
 #define UNIX local::stream_protocol().protocol()
@@ -30,8 +31,27 @@ void serializeInt(uint8_t* buf, int i, uint32_t val);
 
 std::tuple <MessageType, uint32_t, uint32_t> readFromConn(socket_type& socket, std::array<uint8_t, 12> buf);
 void writeToConn(socket_type& socket, std::array<uint8_t, 12> buf, MessageType msg_type, uint32_t arg1, uint32_t arg2);
-MessageType peekFromConn(socket_type& socket);
 
+typedef struct {
+	std::string prefix;
+	std::string address = "192.168.64.1";
+	int port;
+
+	bool use_tcp = true; //However, hopefully, at some point, we can either fully depreciate using TCP, or gate it behind some more conditions so only a few people actually need it enabled.
+
+	bool compression = false;
+
+	bool resolved = false;
+
+	std::mutex mu;
+} BackendInfo;
+
+void connectToBackend(int id, socket_ptr& socket, asio::io_context& context);
+void connectToBackend(BackendInfo* id, socket_ptr& socket, asio::io_context& context);
+BackendInfo* getBackend(int id, BackendInfo** ret = NULL);
+
+void packMessage(uint8_t* buf, uint32_t a, uint32_t b, uint32_t c);
+std::tuple<uint32_t, uint32_t, uint32_t> unpackMessage(uint8_t* buf);
 
 std::string getEnv(std::string _key, std::string _default);
 int getEnv(std::string _key, int _default);
