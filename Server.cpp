@@ -70,9 +70,6 @@ auto SocketClose(socket_ptr& socket){
 
 std::atomic<uint32_t> thread_counter = 0;
 
-
-std::shared_mutex t2i_mutex;
-
 asio::io_context context;
 
 std::mutex ring_mutex;
@@ -110,7 +107,7 @@ auto WaitForChange(std::reference_wrapper<DriveInfo>& info, std::function<bool(u
 }
 
 
-void writeToRing(uint32_t thread, MessageType msg_type, uint32_t arg1, socket_type* conn = NULL, uint32_t length = 0){
+void writeToRing(uint32_t thread, MessageType msg_type, uint32_t arg1, socket_type* conn = NULL, uint32_t count = 0){
 	std::unique_lock lk(ring_mutex);
 	
 	auto mem = Write.get().mmap;
@@ -120,29 +117,31 @@ void writeToRing(uint32_t thread, MessageType msg_type, uint32_t arg1, socket_ty
 		auto [ head, tail, f ] = WaitForChange(Write, [](uint8_t a, uint8_t b){ return b!=(a-1);}); //Wait until the tail (which points to the index after the last filled element) is one place before the head.
 
 		while(f(head,tail)){
-			auto offset = segments[tail-1].offset; //Has to be tail-1 since tail points to the index after the last actual element
-			auto size = segments[tail-1].size;
+			auto offset = segments[tail].offset;
 
-			auto written_length = std::min(size - 12, length); //How much data to write
-			if(length > 0){ //There's data to write --- any call to write data should be separate from the call to write a control message
+			auto size = segments[tail].size;
+
+			auto written = std::min(size - 12, count); //How much data to write
+			if(count > 0){ //There's data to write --- any call to write data should be separate from the call to write a control message
 
 				msg_type = DATA;
-				arg1 = written_length;
+				arg1 = written;
 			}
 
 			packMessage(mem+offset, thread, msg_type, arg1);
 
 
 			if(conn != NULL){
-				asio::read(*conn, asio::buffer(mem+offset+12, written_length));
+				asio::read(*conn, asio::buffer(mem+offset+12, written));
 			}
 
-			length -= written_length;
+			count -= written;
 			
+			flushDrive();
 			*(Write.get().tail)=(++tail);
 			flushDrive();
 			
-			if(size == 0){
+			if(count == 0){
 				return;
 			}
 		}
@@ -162,6 +161,10 @@ typedef struct ThreadInfo{
 } ThreadInfo;
 
 std::unordered_map<uint32_t, std::shared_ptr<ThreadInfo>> thread_to_info; //Map the client thread id to the corresponding thread. We use the client server thread number globally for both server and client (works as long as there is a 1-to-1 relationship between a client and server, and that upon disconnection on either side, we completely restart (ie, re-exec) the corresponding side).
+
+std::shared_mutex t2i_mutex;
+
+std::condition_variable_any t2i_delete_cv;
 
 void HandleConn(int key, std::shared_ptr<ThreadInfo> info){ //Read from socket and write to ring
 //When quitting, remove from dictionary
@@ -202,6 +205,7 @@ void HandleConn(int key, std::shared_ptr<ThreadInfo> info){ //Read from socket a
 	catch (asio::system_error&){
 		t2i_mutex.lock();
 		thread_to_info.erase(key);
+		t2i_delete_cv.notify_all();
 		t2i_mutex.unlock();
 
 	}
@@ -224,7 +228,13 @@ void readFromRing(){
 			auto size = segments[head].size;
 
 			auto [thread, msg_type, arg1] = unpackMessage(mem+offset);
-	
+			
+			if(msg_type == CONNECT){ //Special case --- CONNECT on the host side means that you have to create the new thread ahead-of-time  
+				t2i_mutex.lock();
+				thread_to_info[thread]=	std::make_shared<ThreadInfo>();
+				t2i_mutex.unlock();
+			}
+				
 			t2i_mutex.lock_shared(); //Makes sure that checking + retrieving object is one atomic operation
 
 			auto exists = thread_to_info.contains(thread);
@@ -245,6 +255,9 @@ void readFromRing(){
 
 							writeToRing(thread, CONFIRM, 0);
 
+							std::thread(HandleConn, thread, info).detach(); //TODO: Remove key argument from HandleConn function, since key is already available through info->thread
+
+
 							break;
 						}
 
@@ -262,6 +275,8 @@ void readFromRing(){
 					case(DISCONNECT):
 						{
 							SocketClose(info->conn); //Trigger the thread's shutdown sequence	
+							std::shared_lock lk(t2i_mutex);
+							t2i_delete_cv.wait(lk, [&]{return !thread_to_info.contains(info->thread);}); //Wait until map no longer has the thread (needed to preserve invariant).
 						}
 
 					case(CONFIRM): //Received confirmation of connection by server
@@ -269,12 +284,10 @@ void readFromRing(){
 						info->connected = true;
 						}
 				}
-
-
-				
-				*(Read.get().head)=(++head);
-				flushDrive(); 
+ 
 			}
+			*(Read.get().head)=(++head);
+			flushDrive();
 		}
 	}
 }
@@ -285,6 +298,7 @@ void HandleBackend(socket_ptr socket){
 
 	t2i_mutex.lock();
 	auto& info = thread_to_info[key];
+	info = std::make_shared<ThreadInfo>();
 	info->thread = key;
 	info->conn = std::move(socket);
 	t2i_mutex.unlock();
@@ -324,8 +338,8 @@ int main(int argc, char** argv){
 		IS_GUEST_DEFAULT = false;
 	#elif defined(__linux__)
 		H2G_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:02.0/resource2_wc";
-		//G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:05.0/resource2_wc";
-		G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:03.0/resource2_wc";
+		G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:05.0/resource2_wc";
+		//G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:03.0/resource2_wc";
 		IS_GUEST_DEFAULT = true;
 	#endif
 	
@@ -365,9 +379,9 @@ int main(int argc, char** argv){
 			flushDrive(*info);
 		}
 
-		size -= 2;
-		info->size = size; //To account for <head> and <tail>
-		
+		size -= 2; //To account for <head> and <tail>
+		info->size = size; 
+
 		info->segment_to_info.reserve(NUM_SEGMENTS);
 		
 		uint32_t segment_size=size/NUM_SEGMENTS; //Later, we can use "fair allocation" to use all of the space available
@@ -388,14 +402,15 @@ int main(int argc, char** argv){
 	char buf[2] = "1";
 	ip::tcp::socket socket(context);
 	ip::tcp::endpoint endpoint(ip::address::from_string(ADDRESS), PORT);
-	ip::tcp::acceptor acceptor(context, endpoint);
+	std::optional<ip::tcp::acceptor> acceptor;
 	asio::error_code ec;
 
 	while(true){
 		if(is_guest){
 			socket.connect(endpoint, ec);
 		}else{
-			acceptor.accept(socket, ec);
+			acceptor.emplace(context, endpoint);
+			acceptor->accept(socket, ec);
 		}
 		if(!ec){
 			break;
@@ -409,7 +424,7 @@ int main(int argc, char** argv){
 		
 	std::thread(readFromRing).detach();
 
-	asio::read(socket, asio::buffer(buf)); //As long as the client/server is alive, this should never return...
+	asio::read(socket, asio::buffer(buf), ec); //As long as the client/server is alive, this should never return...
 	
 	execv(argv[0], argv); //...however, if it does, you should restart the whole program.
 }
