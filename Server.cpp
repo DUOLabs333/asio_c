@@ -228,7 +228,7 @@ void readFromRing(){
 			auto size = segments[head].size;
 
 			auto [thread, msg_type, arg1] = unpackMessage(mem+offset);
-			
+			//printf("Message type: %i\n", msg_type);
 			if(msg_type == CONNECT){ //Special case --- CONNECT on the host side means that you have to create the new thread ahead-of-time  
 				t2i_mutex.lock();
 				thread_to_info[thread]=	std::make_shared<ThreadInfo>();
@@ -243,7 +243,8 @@ void readFromRing(){
 				info = thread_to_info[thread];
 			}
 			t2i_mutex.unlock_shared();
-
+			//printf("Exists: %i\n", exists);
+			//printf("Thread: %i\n", thread);
 			if (exists){
 				switch(msg_type){
 					case(CONNECT): //Received request from client
@@ -282,6 +283,7 @@ void readFromRing(){
 					case(CONFIRM): //Received confirmation of connection by server
 						{
 						info->connected = true;
+						info->connected.notify_all();
 						}
 				}
  
