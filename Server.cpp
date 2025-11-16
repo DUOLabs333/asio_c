@@ -339,9 +339,10 @@ int main(int argc, char** argv){
 		G2H_DEFAULT_FILE="/Volumes/disk4/g2h";
 		IS_GUEST_DEFAULT = false;
 	#elif defined(__linux__)
+		//TODO: sudo chmod 777 both files
 		H2G_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:02.0/resource2_wc";
-		G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:05.0/resource2_wc";
-		//G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:03.0/resource2_wc";
+		//G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:05.0/resource2_wc";
+		G2H_DEFAULT_FILE = "/sys/devices/platform/3f000000.pcie/pci0000:00/0000:00:03.0/resource2_wc";
 		IS_GUEST_DEFAULT = true;
 	#endif
 	
