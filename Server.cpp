@@ -35,7 +35,7 @@ int PORT=getEnv("CONN_SERVER_PORT", 4000);
 
 bool is_guest; 
 
-#define NUM_SEGMENTS 256 //Must be no bigger than 256 (since the information is stored in a single byte
+#define NUM_SEGMENTS 256 //Must be no bigger than 256 (since the head/tail information must be able to be stored in a single byte)
 
 typedef struct {
 	uint32_t offset;
@@ -80,16 +80,13 @@ default tcp (even with the macOS-specific vmnet.framework specifically designed 
 */
 
 void flushDrive(DriveInfo& info){
+	return; //Doesn't seem like I need to explicitly sync
 	if(!is_guest){ //Hosts do not have access to fsync-free PCI
 		#ifdef __APPLE__
 			fcntl(info.fd, F_FULLFSYNC);
 		#endif
 
 	}
-}
-
-void flushDrive(){
-	return flushDrive(Write.get());
 }
 
 //0|1|2|3|4|5
@@ -137,9 +134,9 @@ void writeToRing(uint32_t thread, MessageType msg_type, uint32_t arg1, socket_ty
 
 			count -= written;
 			
-			flushDrive();
+			flushDrive(Write.get());
 			*(Write.get().tail)=(++tail);
-			flushDrive();
+			flushDrive(Write.get());
 			
 			if(count == 0){
 				return;
@@ -289,7 +286,7 @@ void readFromRing(){
  
 			}
 			*(Read.get().head)=(++head);
-			flushDrive();
+			flushDrive(Read.get());
 		}
 	}
 }
